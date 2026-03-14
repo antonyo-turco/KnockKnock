@@ -1,3 +1,3 @@
 [submodule "iot-presentation"]
 	path = iot-presentation
-	url = .\\iot-presentation\\
+	url = https://github.com/antonyo-turco/iot-presentations

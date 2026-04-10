@@ -14,5 +14,11 @@ KnockKnock is a low-cost, wireless IoT intrusion detection project focused on do
 | [Antonio Turco](https://www.linkedin.com/in/antonyoturco/) | [antonyo-turco](https://github.com/antonyo-turco) | 1986183 |
 
 
+## Deliveries
+### [1st delivery pdf](https://github.com/antonyo-turco/iot-presentations/blob/9377e07d5346901678ff115f52adedeaf1f66225/1st-presentation/outputs/main.pdf)
+### [2nd delivery pdf](https://github.com/antonyo-turco/iot-presentations/blob/9377e07d5346901678ff115f52adedeaf1f66225/2nd-presentation/outputs/main.pdf)
+### [2nd delivery MD]()
+
+
 ## Youtube links
-- Second delivery: https://youtu.be/wBy7bFRrQwU
+### [Demo 2nd delivery](https://youtu.be/wBy7bFRrQwU)

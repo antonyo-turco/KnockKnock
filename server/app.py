@@ -111,6 +111,16 @@ def receive_bulk_data():
         if sampling_rate_hz <= 0:
             sampling_rate_hz = 100
 
+        batch_size = int(data.get('batch_size', len(measurements)))
+        expected_batch_size = 500
+        if len(measurements) != expected_batch_size or batch_size != expected_batch_size:
+            return jsonify({
+                'status': 'error',
+                'message': f'Expected fixed batch of {expected_batch_size} samples',
+                'received': len(measurements),
+                'batch_size': batch_size,
+            }), 400
+
         server_timestamp = datetime.now(timezone.utc)
         sample_interval_ms = 1000.0 / sampling_rate_hz
         first_timestamp = server_timestamp - timedelta(milliseconds=sample_interval_ms * (len(measurements) - 1))
@@ -208,6 +218,7 @@ def receive_bulk_data():
         conn.close()
 
         print(f"✓ Inserted {len(measurements)} measurements with progressive timestamps")
+        print(f"✓ Fixed batch size: {expected_batch_size}")
         print(f"✓ First timestamp: {first_timestamp.isoformat()}")
         print(f"✓ Last timestamp: {(first_timestamp + timedelta(milliseconds=sample_interval_ms * (len(measurements) - 1))).isoformat()}")
         print(f"✓ Aggregates saved (X:{min_x:.2f}-{max_x:.2f}, Y:{min_y:.2f}-{max_y:.2f}, Z:{min_z:.2f}-{max_z:.2f})")
@@ -217,6 +228,7 @@ def receive_bulk_data():
         return jsonify({
             'status': 'ok',
             'count': len(measurements),
+            'batch_size': expected_batch_size,
             'server_timestamp': server_timestamp.isoformat(),
             'batch_number': batch_number,
             'impact_score': impact_score,
@@ -414,13 +426,30 @@ def get_stats():
         time_row = cursor.fetchone()
         
         conn.close()
+
+        sampling_rate_hz = 100
+        seconds_per_day = 24 * 60 * 60
+        estimated_samples_24h = sampling_rate_hz * seconds_per_day
+        estimated_batches_24h = estimated_samples_24h // 500
+        database_size_bytes = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        estimated_raw_bytes_per_sample = 90
+        estimated_raw_24h_bytes = estimated_samples_24h * estimated_raw_bytes_per_sample
+        estimated_batch_overhead_bytes = 700
+        estimated_aux_24h_bytes = estimated_batches_24h * estimated_batch_overhead_bytes
+        estimated_total_24h_bytes = estimated_raw_24h_bytes + estimated_aux_24h_bytes
         
         return jsonify({
             'total_measurements': count_row['count'],
             'total_aggregates': agg_count['count'],
             'total_features': feat_count['count'],
             'first_measurement': time_row['first'],
-            'last_measurement': time_row['last']
+            'last_measurement': time_row['last'],
+            'database_size_bytes': database_size_bytes,
+            'estimated_samples_24h': estimated_samples_24h,
+            'estimated_batches_24h': estimated_batches_24h,
+            'estimated_raw_24h_bytes': estimated_raw_24h_bytes,
+            'estimated_aux_24h_bytes': estimated_aux_24h_bytes,
+            'estimated_total_24h_bytes': estimated_total_24h_bytes,
         }), 200
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400

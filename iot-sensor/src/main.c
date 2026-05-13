@@ -25,6 +25,9 @@
 #include "adxl362.h"
 #include "fft_processor.h"
 #include "esp_dsp.h"
+#include "esp_event.h"
+#include "secure_store.h"
+#include "esp_now_comm.h"
 
 static const char *TAG = "MAIN";
 
@@ -174,10 +177,30 @@ static void enter_deep_sleep(void)
  * ========================================================= */
 void app_main(void)
 {
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_causes();
 
     if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
         ESP_LOGI(TAG, "=== Woken up by ADXL362 (motion detected!) ===");
+        
+        // Initialize NVS/secure_store
+        ESP_ERROR_CHECK(secure_store_init());
+        
+        // Initialize default event loop for Wi-Fi
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        
+        // Target Gateway MAC (Dummy MAC for testing: 24:6F:28:AE:52:10)
+        uint8_t gw_mac[6] = {0x24, 0x6F, 0x28, 0xAE, 0x52, 0x10};
+        ESP_ERROR_CHECK(esp_now_comm_init(gw_mac, 1));
+        
+        // Send a knock alert
+        const char *msg = "KNOCK_DETECTED";
+        esp_err_t res = esp_now_comm_send((const uint8_t*)msg, strlen(msg));
+        if (res == ESP_OK) {
+            ESP_LOGI(TAG, "Alert sent successfully to gateway via ESP-NOW");
+        } else {
+            ESP_LOGE(TAG, "Failed to send alert via ESP-NOW");
+        }
+        
     } else {
         ESP_LOGI(TAG, "=== First boot / manual reset ===");
         ESP_LOGI(TAG, "No active session on first boot - configuring and sleeping.");

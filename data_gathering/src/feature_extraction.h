@@ -3,35 +3,27 @@
 
 #include <Arduino.h>
 
-// Struttura per contenere i dati di un campione
-struct Measurement {
-    int16_t x;
-    int16_t y;
-    int16_t z;
-};
-
-// Struttura per contenere le feature calcolate
-struct AxisFeatures {
+struct InferenceFeatures {
     float impact_score;
-    int event_flag;
-    // Aggiungi qui altre feature se necessario
-    // Esempio:
-    // float x_rms;
-    // float y_rms;
-    // float z_rms;
-    // float m_dominant_freq;
+
+    // magnitude features
+    float m_p99;
+    float m_jerk_max;
+    float m_band_20_40;
+    float m_spectral_flux;
+
+    // per-axis features
+    float x_p99;
+    float y_p99;
+    float z_p99;
+    float x_jerk_max;
+    float y_jerk_max;
+    float z_jerk_max;
+    float x_band_20_40;
+    float y_band_20_40;
+    float z_band_20_40;
 };
 
-/**
- * @brief Calcola le feature da un batch di dati dell'accelerometro.
- *
- * @param x_values Array dei valori dell'asse X.
- * @param y_values Array dei valori dell'asse Y.
- * @param z_values Array dei valori dell'asse Z.
- * @param size La dimensione degli array (numero di campioni).
- * @param sampling_rate_hz La frequenza di campionamento in Hz.
- * @return Una struttura AxisFeatures con le feature calcolate.
- */
-AxisFeatures compute_features(const float x_values[], const float y_values[], const float z_values[], int size, float sampling_rate_hz);
+InferenceFeatures compute_features(const int16_t x_values[], const int16_t y_values[], const int16_t z_values[], int size, float sampling_rate_hz);
 
-#endif // FEATURE_EXTRACTION_H
+#endif

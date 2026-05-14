@@ -121,6 +121,9 @@ def receive_bulk_data():
                 'batch_size': batch_size,
             }), 400
 
+        client_aggregates = data.get('aggregates') or {}
+        client_features = data.get('features') or {}
+
         server_timestamp = datetime.now(timezone.utc)
         sample_interval_ms = 1000.0 / sampling_rate_hz
         first_timestamp = server_timestamp - timedelta(milliseconds=sample_interval_ms * (len(measurements) - 1))
@@ -150,16 +153,26 @@ def receive_bulk_data():
                 (measurement_timestamp.isoformat(), x, y, z)
             )
 
-        avg_x = statistics.mean(x_values) if x_values else 0
-        avg_y = statistics.mean(y_values) if y_values else 0
-        avg_z = statistics.mean(z_values) if z_values else 0
-
-        min_x = min(x_values) if x_values else 0
-        max_x = max(x_values) if x_values else 0
-        min_y = min(y_values) if y_values else 0
-        max_y = max(y_values) if y_values else 0
-        min_z = min(z_values) if z_values else 0
-        max_z = max(z_values) if z_values else 0
+        if client_aggregates:
+            min_x = float(client_aggregates.get('min_x', min(x_values) if x_values else 0))
+            max_x = float(client_aggregates.get('max_x', max(x_values) if x_values else 0))
+            avg_x = float(client_aggregates.get('avg_x', statistics.mean(x_values) if x_values else 0))
+            min_y = float(client_aggregates.get('min_y', min(y_values) if y_values else 0))
+            max_y = float(client_aggregates.get('max_y', max(y_values) if y_values else 0))
+            avg_y = float(client_aggregates.get('avg_y', statistics.mean(y_values) if y_values else 0))
+            min_z = float(client_aggregates.get('min_z', min(z_values) if z_values else 0))
+            max_z = float(client_aggregates.get('max_z', max(z_values) if z_values else 0))
+            avg_z = float(client_aggregates.get('avg_z', statistics.mean(z_values) if z_values else 0))
+        else:
+            avg_x = statistics.mean(x_values) if x_values else 0
+            avg_y = statistics.mean(y_values) if y_values else 0
+            avg_z = statistics.mean(z_values) if z_values else 0
+            min_x = min(x_values) if x_values else 0
+            max_x = max(x_values) if x_values else 0
+            min_y = min(y_values) if y_values else 0
+            max_y = max(y_values) if y_values else 0
+            min_z = min(z_values) if z_values else 0
+            max_z = max(z_values) if z_values else 0
 
         cursor.execute(
             '''INSERT INTO aggregates (timestamp, batch_number, min_x, max_x, avg_x,
@@ -172,6 +185,9 @@ def receive_bulk_data():
         features_map, impact_score, event_flag = compute_batch_features(
             x_values, y_values, z_values, sampling_rate_hz=sampling_rate_hz, n_fft=512
         )
+        feature_payload = dict(features_map)
+        if client_features:
+            feature_payload['client_features'] = client_features
 
         cursor.execute(
             '''INSERT INTO features (
@@ -210,7 +226,7 @@ def receive_bulk_data():
                 features_map['z']['bandpower_20_40'],
                 features_map['m']['bandpower_20_40'],
                 features_map['m']['spectral_flux'],
-                json.dumps(features_map),
+                json.dumps(feature_payload),
             )
         )
 

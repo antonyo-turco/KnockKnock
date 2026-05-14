@@ -86,6 +86,7 @@ void TaskSampler(void *pvParameters) {
     while (1) {
         // Read accelerometer sample
         AccelSample sample = accel.readSample();
+        printf("%d\t%d\t%d\n", sample.x, sample.y, sample.z);
         
         // Calculate magnitude (sqrt(x² + y² + z²))
         float magnitude = sqrt((float)sample.x * sample.x + 

@@ -201,7 +201,7 @@ static void oled_show_training() {
     oled.display();
 }
 
-static void oled_show_inference(bool baseline, float dist, float impact, float p99) {
+static void oled_show_inference(bool baseline, float dist, float impact, float p99, int cluster) {
     if (!oled_ok) return;
     oled.clearDisplay();
     oled.setTextColor(SSD1306_WHITE);
@@ -214,7 +214,7 @@ static void oled_show_inference(bool baseline, float dist, float impact, float p
         oled.setCursor(0, 20);  oled.printf("dist  : %.4f", dist);
         oled.setCursor(0, 32);  oled.printf("impact: %.4f", impact);
         oled.setCursor(0, 44);  oled.printf("m_p99 : %.2f",  p99);
-        oled.setCursor(0, 56);  oled.printf("win #%lu", (unsigned long)g_window_seq);
+        oled.setCursor(0, 56);  oled.printf("cluster: C%d", cluster);
     } else {
         // Inverted — maximum visibility
         oled.fillRect(0, 0, OLED_WIDTH, OLED_HEIGHT, SSD1306_WHITE);
@@ -225,7 +225,7 @@ static void oled_show_inference(bool baseline, float dist, float impact, float p
         oled.setTextSize(1);
         oled.setCursor(4, 22);  oled.printf("dist  : %.4f", dist);
         oled.setCursor(4, 34);  oled.printf("impact: %.4f", impact);
-        oled.setCursor(4, 46);  oled.printf("m_p99 : %.2f",  p99);
+        oled.setCursor(4, 46);  oled.printf("cluster: C%d", cluster);
     }
     oled.display();
 }
@@ -399,7 +399,7 @@ static void process_window() {
             g_led_pattern = ok ? LedPattern::OFF : LedPattern::FAST_BLINK;
 
             if (g_window_seq % OLED_REFRESH_WINDOWS == 0)
-                oled_show_inference(ok, dist, feat.impact_score, feat.m_p99);
+                oled_show_inference(ok, dist, feat.impact_score, feat.m_p99, cluster);
 
             Serial.printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  %s\n",
                           (unsigned long)g_window_seq,

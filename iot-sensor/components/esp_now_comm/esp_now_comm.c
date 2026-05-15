@@ -31,7 +31,11 @@ static const uint8_t obfuscated_lmk[16] = {
     'L'^0x4C, 'm'^0x4C, 'k'^0x4C, 'K'^0x4C, 'e'^0x4C, 'y'^0x4C, '3'^0x4C, '4'^0x4C
 };
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 static void esp_now_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
+#else
+static void esp_now_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) {
+#endif
     s_send_status = status;
     if (s_send_sem) {
         xSemaphoreGive(s_send_sem);

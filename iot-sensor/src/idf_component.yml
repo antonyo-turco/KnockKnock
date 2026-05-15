@@ -1,2 +1,3 @@
 dependencies:
-  espressif/esp-dsp: "^1.4.0"
+  espressif/esp-dsp:
+    version: "==1.4.0"

@@ -3,6 +3,9 @@
 #include <float.h>
 #include "fft_processor.h"
 
+
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,6 +166,25 @@ static void compute_signal_metrics(
     }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Time helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool get_time_features(float &time_sin_out, float &time_cos_out) {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        // RTC not synced yet — return neutral values (midnight)
+        time_sin_out = 0.0f;
+        time_cos_out = 1.0f;
+        return false;
+    }
+    int   minute_of_day = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    float angle         = 2.0f * (float)M_PI * (float)minute_of_day / 1440.0f;
+    time_sin_out = sinf(angle);
+    time_cos_out = cosf(angle);
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -171,12 +193,13 @@ InferenceFeatures compute_features(
     const int16_t y_values[],
     const int16_t z_values[],
     int   size,
-    float sampling_rate_hz)
+    float sampling_rate_hz,
+    float time_sin,
+    float time_cos)
 {
     InferenceFeatures feat{};
     if (size <= 0) return feat;
 
-    // ── Convert to float; compute magnitude vector ───────────────────────────
     static float mag_m[SAMPLE_COUNT];
     static float mag_x[SAMPLE_COUNT];
     static float mag_y[SAMPLE_COUNT];
@@ -189,76 +212,49 @@ InferenceFeatures compute_features(
         float fx = (float)x_values[i];
         float fy = (float)y_values[i];
         float fz = (float)z_values[i];
-        float m  = sqrtf(fx * fx + fy * fy + fz * fz);
-        mag_m[i] = m;
-        mag_x[i] = fx;
-        mag_y[i] = fy;
-        mag_z[i] = fz;
+        float m  = sqrtf(fx*fx + fy*fy + fz*fz);
+        mag_m[i] = m; mag_x[i] = fx; mag_y[i] = fy; mag_z[i] = fz;
         m_rms_acc += m * m;
     }
     float m_rms = sqrtf(m_rms_acc / (float)size);
-
     for (int i = 1; i < size; ++i) {
-        float j = fabsf(mag_m[i] - mag_m[i - 1]);
+        float j = fabsf(mag_m[i] - mag_m[i-1]);
         if (j > m_jerk_max) m_jerk_max = j;
     }
 
-    // ── Magnitude metrics ────────────────────────────────────────────────────
-    float m_p99, m_jerk, m_b15, m_b520, m_b2040;
-    float m_top7[TOP7_COUNT];
-    compute_signal_metrics(mag_m, size, sampling_rate_hz,
-                           m_p99, m_jerk, m_b15, m_b520, m_b2040, m_top7);
-    // Use the pre-computed m_jerk_max (identical to m_jerk, kept for clarity)
+    float m_p99, m_jerk, m_b15, m_b520, m_b2040; float m_top7[TOP7_COUNT];
+    float x_p99, x_jerk, x_b15, x_b520, x_b2040; float x_top7[TOP7_COUNT];
+    float y_p99, y_jerk, y_b15, y_b520, y_b2040; float y_top7[TOP7_COUNT];
+    float z_p99, z_jerk, z_b15, z_b520, z_b2040; float z_top7[TOP7_COUNT];
 
-    // ── Per-axis metrics ─────────────────────────────────────────────────────
-    float x_p99, x_jerk, x_b15, x_b520, x_b2040;  float x_top7[TOP7_COUNT];
-    float y_p99, y_jerk, y_b15, y_b520, y_b2040;  float y_top7[TOP7_COUNT];
-    float z_p99, z_jerk, z_b15, z_b520, z_b2040;  float z_top7[TOP7_COUNT];
+    compute_signal_metrics(mag_m, size, sampling_rate_hz, m_p99, m_jerk, m_b15, m_b520, m_b2040, m_top7);
+    compute_signal_metrics(mag_x, size, sampling_rate_hz, x_p99, x_jerk, x_b15, x_b520, x_b2040, x_top7);
+    compute_signal_metrics(mag_y, size, sampling_rate_hz, y_p99, y_jerk, y_b15, y_b520, y_b2040, y_top7);
+    compute_signal_metrics(mag_z, size, sampling_rate_hz, z_p99, z_jerk, z_b15, z_b520, z_b2040, z_top7);
 
-    compute_signal_metrics(mag_x, size, sampling_rate_hz,
-                           x_p99, x_jerk, x_b15, x_b520, x_b2040, x_top7);
-    compute_signal_metrics(mag_y, size, sampling_rate_hz,
-                           y_p99, y_jerk, y_b15, y_b520, y_b2040, y_top7);
-    compute_signal_metrics(mag_z, size, sampling_rate_hz,
-                           z_p99, z_jerk, z_b15, z_b520, z_b2040, z_top7);
-
-    // ── ZCR (time-domain, no FFT needed) ─────────────────────────────────────
     float x_zcr = compute_zcr(mag_x, size);
     float y_zcr = compute_zcr(mag_y, size);
     float z_zcr = compute_zcr(mag_z, size);
 
-    // ── impact_score — normalised composite in [0, 1] ────────────────────────
-    // Based on magnitude: p99 (0.40), jerk (0.35), band_20_40 (0.25)
     float p99_norm  = fminf(1.0f, m_p99      / (m_rms *  8.0f + 1e-9f));
     float jerk_norm = fminf(1.0f, m_jerk_max / (m_rms * 12.0f + 1e-9f));
     float band_norm = fminf(1.0f, m_b2040    / (m_rms * m_rms * (float)size * 0.3f + 1e-9f));
     feat.impact_score = safe_float(0.40f * p99_norm + 0.35f * jerk_norm + 0.25f * band_norm);
 
-    // ── Fill struct ───────────────────────────────────────────────────────────
-    feat.m_p99  = safe_float(m_p99);
-    feat.x_p99  = safe_float(x_p99);
-    feat.y_p99  = safe_float(y_p99);
-    feat.z_p99  = safe_float(z_p99);
+    feat.m_p99 = safe_float(m_p99); feat.x_p99 = safe_float(x_p99);
+    feat.y_p99 = safe_float(y_p99); feat.z_p99 = safe_float(z_p99);
 
-    feat.m_jerk_max = safe_float(m_jerk_max);
-    feat.x_jerk_max = safe_float(x_jerk);
-    feat.y_jerk_max = safe_float(y_jerk);
-    feat.z_jerk_max = safe_float(z_jerk);
+    feat.m_jerk_max = safe_float(m_jerk_max); feat.x_jerk_max = safe_float(x_jerk);
+    feat.y_jerk_max = safe_float(y_jerk);     feat.z_jerk_max = safe_float(z_jerk);
 
-    feat.m_band_20_40 = safe_float(m_b2040);
-    feat.x_band_20_40 = safe_float(x_b2040);
-    feat.y_band_20_40 = safe_float(y_b2040);
-    feat.z_band_20_40 = safe_float(z_b2040);
+    feat.m_band_20_40 = safe_float(m_b2040); feat.x_band_20_40 = safe_float(x_b2040);
+    feat.y_band_20_40 = safe_float(y_b2040); feat.z_band_20_40 = safe_float(z_b2040);
 
-    feat.m_band_1_5 = safe_float(m_b15);
-    feat.x_band_1_5 = safe_float(x_b15);
-    feat.y_band_1_5 = safe_float(y_b15);
-    feat.z_band_1_5 = safe_float(z_b15);
+    feat.m_band_1_5 = safe_float(m_b15); feat.x_band_1_5 = safe_float(x_b15);
+    feat.y_band_1_5 = safe_float(y_b15); feat.z_band_1_5 = safe_float(z_b15);
 
-    feat.m_band_5_20 = safe_float(m_b520);
-    feat.x_band_5_20 = safe_float(x_b520);
-    feat.y_band_5_20 = safe_float(y_b520);
-    feat.z_band_5_20 = safe_float(z_b520);
+    feat.m_band_5_20 = safe_float(m_b520); feat.x_band_5_20 = safe_float(x_b520);
+    feat.y_band_5_20 = safe_float(y_b520); feat.z_band_5_20 = safe_float(z_b520);
 
     feat.x_zcr = safe_float(x_zcr);
     feat.y_zcr = safe_float(y_zcr);
@@ -269,6 +265,11 @@ InferenceFeatures compute_features(
         feat.y_top7_freq[i] = safe_float(y_top7[i]);
         feat.z_top7_freq[i] = safe_float(z_top7[i]);
     }
+
+    // Time-of-day features — passed in from main to keep this module
+    // independent of WiFi/RTC concerns
+    feat.time_sin = safe_float(time_sin);
+    feat.time_cos = safe_float(time_cos);
 
     return feat;
 }

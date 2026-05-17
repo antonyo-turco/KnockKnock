@@ -49,13 +49,27 @@ struct InferenceFeatures {
     float x_top7_freq[TOP7_COUNT];
     float y_top7_freq[TOP7_COUNT];
     float z_top7_freq[TOP7_COUNT];
+
+    // Circular time-of-day encoding — avoids the 23:59/00:01 discontinuity.
+    // Both are needed: sin alone is ambiguous (morning == afternoon).
+    float time_sin;   // sin(2π * minute_of_day / 1440)
+    float time_cos;   // cos(2π * minute_of_day / 1440)
 };
 
+// Compute all features for one window.
+// time_sin and time_cos must be computed by the caller from the current RTC
+// time and passed in — this keeps feature_extraction independent of WiFi/RTC.
 InferenceFeatures compute_features(
     const int16_t x_values[],
     const int16_t y_values[],
     const int16_t z_values[],
     int           size,
-    float         sampling_rate_hz);
+    float         sampling_rate_hz,
+    float         time_sin,
+    float         time_cos);
+
+// Helper: convert current RTC time to (time_sin, time_cos).
+// Returns false if the RTC has not been synced yet (time is invalid).
+bool get_time_features(float &time_sin_out, float &time_cos_out);
 
 #endif // FEATURE_EXTRACTION_H

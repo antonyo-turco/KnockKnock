@@ -15,10 +15,10 @@
 #include "fft_processor.h"
 #include "esp_dsp.h"
 #include "esp_event.h"
-#include "tinyml_baseline_model.h"
-#include "tinyml_training.h"
-#include "feature_extraction.h" 
 
+#include "config.h"
+#include "ADXL362_utils.h"
+#include "ml_controller.h"
 
 extern "C" {
 #include "secure_store.h"
@@ -28,110 +28,10 @@ extern "C" {
 
 static const char *TAG = "MAIN";
 
-/*==========================================================
-  Global variables
- * Sample structure for storing accelerometer data
- */
-struct Sample { int16_t x, y, z; };
-
-enum class SystemMode : uint8_t { EXPLORING, TRAINING, INFERENCE };
-
-static Sample        g_window[SAMPLE_COUNT];
-static int           g_window_index    = 0;
-static uint32_t      g_window_seq      = 0;
-static unsigned long g_last_sample_ms  = 0;
-static unsigned long g_phase_start_ms  = 0;
-
-static KMeansModel   g_model;
-static SystemMode    g_mode;
-
-/* =========================================================
- *  Pin definitions - change these to match your wiring
- * ========================================================= */
-#define MY_SPI_HOST   SPI3_HOST
-#define MY_PIN_MOSI   GPIO_NUM_23
-#define MY_PIN_MISO   GPIO_NUM_19
-#define MY_PIN_SCLK   GPIO_NUM_18
-#define MY_PIN_CS     GPIO_NUM_5
-#define MY_PIN_INT1   GPIO_NUM_33   /* must be an RTC GPIO for ext0 wakeup */
-#define MY_SPI_CLOCK  1000000       /* 1 MHz - reduced for debugging on breadboard */
 
 
 
 
-#define SIGNAL_GAIN  1.0f  // gain factor to apply to raw accelerometer data before feature extraction
-
-
-
-/// ─────────────────────────────────────────────────────────────────────────────
-///  Thresholds and timings - adjust these for your use case
-/// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG          150   /* 0.150g change from baseline - good for table knocks */
-#define ACTIVITY_TIME_MS        1   /* 1 sample @ 100Hz = 10ms - catches brief impulses */
-#define INACTIVITY_TIME_MS   5000   /* ms of no motion before going back to sleep */
-#define MOTION_DIFF_MG        80.0f /* mg change between samples to count as motion */
-
-
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Phase durations — comment/uncomment the pair you want
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Production: 24h exploring + 24h training
-// #define EXPLORING_DURATION_MS  (24UL * 3600UL * 1000UL)
-// #define TRAINING_DURATION_MS   (24UL * 3600UL * 1000UL)
-
-// Test: 15 min exploring + 15 min training
-// #define EXPLORING_DURATION_MS  (15UL * 60UL * 1000UL)
-// #define TRAINING_DURATION_MS   (15UL * 60UL * 1000UL)
-
-// Quick bench: 2 min exploring + 2 min training
-#define EXPLORING_DURATION_MS    ( 2UL * 60UL * 1000UL)
-#define TRAINING_DURATION_MS     ( 2UL * 60UL * 1000UL)
-
-/* =========================================================
- *  Helper: configure the ADXL362 and start measurement
- * ========================================================= */
-static adxl362_handle_t sensor_init(void)
-{
-    adxl362_handle_t sensor = NULL;
-
-    adxl362_pins_t pins = {
-        .spi_host     = MY_SPI_HOST,
-        .pin_mosi     = MY_PIN_MOSI,
-        .pin_miso     = MY_PIN_MISO,
-        .pin_sclk     = MY_PIN_SCLK,
-        .pin_cs       = MY_PIN_CS,
-        .spi_clock_hz = MY_SPI_CLOCK,
-    };
-
-    esp_err_t ret = adxl362_init(&sensor, &pins);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ADXL362 init failed: %s - check wiring!", esp_err_to_name(ret));
-        return NULL;
-    }
-
-    adxl362_set_range(sensor, ADXL362_RANGE_2G);
-    adxl362_set_odr(sensor, ADXL362_ODR_100_HZ);
-
-    adxl362_set_activity_threshold(sensor, THRESHOLD_MG, ACTIVITY_TIME_MS, true);
-    adxl362_set_inactivity_threshold(sensor, THRESHOLD_MG, INACTIVITY_TIME_MS, true);
-
-    adxl362_start_measurement(sensor);
-
-    vTaskDelay(pdMS_TO_TICKS(300));
-
-    uint8_t status = 0;
-    adxl362_get_status(sensor, &status);
-    if (status & (1 << 4)) {
-        ESP_LOGW(TAG, "Activity flag set during init settle - clearing it.");
-        vTaskDelay(pdMS_TO_TICKS(200));
-        adxl362_get_status(sensor, &status);
-    }
-
-    return sensor;
-}
 
 /* =========================================================
  *  Helper: go to deep sleep, wake on INT1 HIGH (activity)
@@ -179,105 +79,6 @@ static void enter_deep_sleep(void)
 
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Phase transitions
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void transition_to_training() {
-
-
-    bool ok = exploring_finalize(g_model);
-    if (!ok) {
-        printf("[SYSTEM] WARNING: novelty buffer sparse — model may need longer exploring.");
-    }
-
-    g_phase_start_ms = millis();
-    g_mode = SystemMode::TRAINING;
-    printf("[SYSTEM] EXPLORING complete -> TRAINING for %lu s.\n",
-           (unsigned long)TRAINING_DURATION_MS / 1000UL);
-    delay(1500);
-}
-
-static void transition_to_inference() {
-
-
-    training_finalize(g_model);
-    training_save(g_model);
-
-    g_mode = SystemMode::INFERENCE;
-    Serial.println("[SYSTEM] TRAINING complete -> INFERENCE mode.");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Window processing
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void process_window() {
-    static int16_t xb[SAMPLE_COUNT], yb[SAMPLE_COUNT], zb[SAMPLE_COUNT];
-    for (int i = 0; i < SAMPLE_COUNT; ++i) {
-        xb[i] = g_window[i].x;
-        yb[i] = g_window[i].y;
-        zb[i] = g_window[i].z;
-    }
-
-    InferenceFeatures feat = compute_features(
-        xb, yb, zb, SAMPLE_COUNT, SAMPLING_RATE_HZ);
-
-    switch (g_mode) {
-
-        // ── EXPLORING ────────────────────────────────────────────────────────
-        case SystemMode::EXPLORING:
-            exploring_update(g_model, feat);
-
-
-            if (g_window_seq % 150 == 0)
-                Serial.printf("[EXPLORE] win=%lu  n=%lu  novel=%u%%\n",
-                              (unsigned long)g_window_seq,
-                              (unsigned long)g_model.total_samples,
-                              exploring_novelty_pct());
-
-            if (millis() - g_phase_start_ms >= EXPLORING_DURATION_MS)
-                transition_to_training();
-            break;
-
-        // ── TRAINING ─────────────────────────────────────────────────────────
-        case SystemMode::TRAINING:
-            training_update(g_model, feat);
-
-
-            if (g_window_seq % 150 == 0) {
-                uint32_t elapsed = millis() - g_phase_start_ms;
-                Serial.printf("[TRAIN] win=%lu  n=%lu  %lu%%\n",
-                              (unsigned long)g_window_seq,
-                              (unsigned long)g_model.total_samples,
-                              elapsed * 100 / TRAINING_DURATION_MS);
-            }
-
-            if (millis() - g_phase_start_ms >= TRAINING_DURATION_MS)
-                transition_to_inference();
-            break;
-
-        // ── INFERENCE ────────────────────────────────────────────────────────
-        case SystemMode::INFERENCE: {
-            float dist    = 0.0f;
-            int   cluster = -1;
-            bool  ok      = training_is_baseline(g_model, feat, &dist, &cluster);
-
-            Serial.printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  C%d  %s\n",
-                        (unsigned long)g_window_seq,
-                        feat.impact_score, feat.m_p99, dist,
-                        cluster,
-                        ok ? "BASELINE" : "*** DEVIATION ***");
-
-
-            Serial.printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  %s\n",
-                          (unsigned long)g_window_seq,
-                          feat.impact_score, feat.m_p99, dist,
-                          ok ? "BASELINE" : "*** DEVIATION ***");
-            break;
-        }
-    }
-}
 
 /*===============
 * ADXL362 sample

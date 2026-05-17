@@ -30,4 +30,30 @@ static constexpr int   SAMPLE_PERIOD_MS = 10;
 static constexpr int   NOVELTY_BUFFER_SIZE = 200;
 static constexpr float NOVELTY_THRESHOLD   = 1.5f;
 
+/// ─────────────────────────────────────────────────────────────────────────────
+///  Thresholds and timings - adjust these for your use case
+/// ─────────────────────────────────────────────────────────────────────────────
+#define THRESHOLD_MG          150   /* 0.150g change from baseline - good for table knocks */
+#define ACTIVITY_TIME_MS        1   /* 1 sample @ 100Hz = 10ms - catches brief impulses */
+#define INACTIVITY_TIME_MS   5000   /* ms of no motion before going back to sleep */
+#define MOTION_DIFF_MG        80.0f /* mg change between samples to count as motion */
+
+#define SIGNAL_GAIN  1.0f  // gain factor to apply to raw accelerometer data before feature extraction
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Phase durations — comment/uncomment the pair you want
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Production: 24h exploring + 24h training
+// #define EXPLORING_DURATION_MS  (24UL * 3600UL * 1000UL)
+// #define TRAINING_DURATION_MS   (24UL * 3600UL * 1000UL)
+
+// Test: 15 min exploring + 15 min training
+// #define EXPLORING_DURATION_MS  (15UL * 60UL * 1000UL)
+// #define TRAINING_DURATION_MS   (15UL * 60UL * 1000UL)
+
+// Quick bench: 2 min exploring + 2 min training
+#define EXPLORING_DURATION_MS    ( 2UL * 60UL * 1000UL)
+#define TRAINING_DURATION_MS     ( 2UL * 60UL * 1000UL)
+
 #endif // CONFIG_H

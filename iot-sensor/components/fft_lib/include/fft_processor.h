@@ -17,10 +17,10 @@ extern "C" {
 esp_err_t fft_processor_init(int max_samples);
 
 /**
- * @brief Elabora un segnale nel dominio del tempo ed estrae le magnitudo delle frequenze.
+ * @brief Elabora un segnale nel dominio del tempo ed estrae la magnitudo lineare delle frequenze.
  * 
- * @param[in]  input_signal     Array contenente il segnale di input (dimensione: samples).
- * @param[out] output_magnitude Array dove verranno salvate le magnitudo (dimensione: samples / 2).
+ * @param[in]  input_signal     Array contenente il segnale di input (dimensione: samples). ATTENZIONE: verrà modificato dalla funzione di windowing.
+ * @param[out] output_magnitude Array dove verranno salvate le magnitudo lineari (dimensione: samples / 2).
  * @param[in]  samples          Numero di campioni (es. 1024, potenza di 2).
  */
 void fft_processor_compute_magnitude(float *input_signal, float *output_magnitude, int samples);

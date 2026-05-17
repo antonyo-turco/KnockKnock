@@ -174,6 +174,7 @@ typedef struct {
     float z_mg;  /* Z-axis acceleration in milli-g */
 } adxl362_data_mg_t;
 
+
 /* =========================================================
  *  Device handle (opaque pointer)
  *  The internal struct is defined in adxl362.c - callers

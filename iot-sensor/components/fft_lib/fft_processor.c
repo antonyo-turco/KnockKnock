@@ -44,6 +44,7 @@ void fft_processor_compute_magnitude(float *input_signal, float *output_magnitud
     }
 
     // 2. Applicazione della finestra di Hann per ridurre il leakage spettrale
+    // NOTA: dsps_wind_hann_f32 modifica l'array input_signal.
     dsps_wind_hann_f32(input_signal, samples);
 
     // 3. Esecuzione della trasformata di Fourier Veloce (Radix-2)
@@ -52,17 +53,14 @@ void fft_processor_compute_magnitude(float *input_signal, float *output_magnitud
     // 4. Riordino dei bit (operazione necessaria per l'algoritmo FFT di esp-dsp)
     dsps_bit_rev_fc32(complex_workspace, samples);
 
-    // 5. Estrazione della magnitudo logaritmica (in dB) per le frequenze positive
+    // 5. Estrazione della magnitudo LINEARE
     for (int i = 0; i < samples / 2; i++) {
         float real = complex_workspace[i * 2];
         float imag = complex_workspace[i * 2 + 1];
-        float power = (real * real + imag * imag) / samples;
         
-        // Evita il logaritmo di zero per prevenire errori matematici (NaN/Inf)
-        if (power < 1e-12f) {
-            output_magnitude[i] = -120.0f; // Valore minimo di clamping (dB)
-        } else {
-            output_magnitude[i] = 10.0f * log10f(power);
-        }
+        // Calcolo della magnitudo: sqrt(Re^2 + Im^2)
+        // Omettiamo la divisione per 'samples' per mantenere lo stesso
+        // ordine di grandezza che restituiva ArduinoFFT.complexToMagnitude().
+        output_magnitude[i] = sqrtf(real * real + imag * imag);
     }
 }

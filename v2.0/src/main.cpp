@@ -20,8 +20,8 @@
 // #define TRAINING_DURATION_MS   (15UL * 60UL * 1000UL)
 
 // Quick bench: 2 min exploring + 2 min training
-#define EXPLORING_DURATION_MS    ( 2UL * 60UL * 1000UL)
-#define TRAINING_DURATION_MS     ( 2UL * 60UL * 1000UL)
+#define EXPLORING_DURATION_MS    ( 1UL * 60UL * 1000UL)
+#define TRAINING_DURATION_MS     ( 1UL * 60UL * 1000UL)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware

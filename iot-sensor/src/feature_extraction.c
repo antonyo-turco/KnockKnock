@@ -1,6 +1,11 @@
 #include "feature_extraction.h"
 #include <math.h>
 #include <float.h>
+#include <time.h>
+#include <sys/time.h>
+#include "fft_processor.h"
+#include <math.h>
+#include <float.h>
 #include "fft_processor.h"
 
 
@@ -114,16 +119,16 @@ static void top7_frequencies(const float magnitudes[], int n_bins,
 
 static void compute_signal_metrics(
     const float signal[], int size, float sampling_rate_hz,
-    float &p99_out, float &jerk_max_out,
-    float &band_1_5_out, float &band_5_20_out, float &band_20_40_out,
+    float *p99_out, float *jerk_max_out,
+    float *band_1_5_out, float *band_5_20_out, float *band_20_40_out,
     float top7_freq_out[TOP7_COUNT])
     {
     // ── Time-domain metrics ──────────────────────────────────────────────────
-    p99_out      = percentile_99(signal, size);
-    jerk_max_out = 0.0f;
+    *p99_out      = percentile_99(signal, size);
+    *jerk_max_out = 0.0f;
     for (int i = 1; i < size; ++i) {
         float j = fabsf(signal[i] - signal[i - 1]);
-        if (j > jerk_max_out) jerk_max_out = j;
+        if (j > *jerk_max_out) *jerk_max_out = j;
     }
 
     // ── FFT (Utilizzando fft_processor hardware) ────────────────────────────
@@ -158,9 +163,9 @@ static void compute_signal_metrics(
     
     // ── Estrazione Feature in Frequenza ─────────────────────────────────────
     // Ora passiamo l'array vMag che contiene i valori calcolati dall'acceleratore
-    band_1_5_out   = bandpower(freqs, vMag, n_bins,  1.0f,  5.0f);
-    band_5_20_out  = bandpower(freqs, vMag, n_bins,  5.0f, 20.0f);
-    band_20_40_out = bandpower(freqs, vMag, n_bins, 20.0f, 40.0f);
+    *band_1_5_out   = bandpower(freqs, vMag, n_bins,  1.0f,  5.0f);
+    *band_5_20_out  = bandpower(freqs, vMag, n_bins,  5.0f, 20.0f);
+    *band_20_40_out = bandpower(freqs, vMag, n_bins, 20.0f, 40.0f);
 
     top7_frequencies(vMag, n_bins, sampling_rate_hz, top7_freq_out);
     }
@@ -169,18 +174,21 @@ static void compute_signal_metrics(
 //  Time helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool get_time_features(float &time_sin_out, float &time_cos_out) {
+bool get_time_features(float *time_sin_out, float *time_cos_out) {
+    time_t now;
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    if (timeinfo.tm_year < (2016 - 1900)) {
         // RTC not synced yet — return neutral values (midnight)
-        time_sin_out = 0.0f;
-        time_cos_out = 1.0f;
+        *time_sin_out = 0.0f;
+        *time_cos_out = 1.0f;
         return false;
     }
     int   minute_of_day = timeinfo.tm_hour * 60 + timeinfo.tm_min;
     float angle         = 2.0f * (float)M_PI * (float)minute_of_day / 1440.0f;
-    time_sin_out = sinf(angle);
-    time_cos_out = cosf(angle);
+    *time_sin_out = sinf(angle);
+    *time_cos_out = cosf(angle);
     return true;
 }
 
@@ -197,7 +205,7 @@ InferenceFeatures compute_features(
     float time_sin,
     float time_cos)
 {
-    InferenceFeatures feat{};
+    InferenceFeatures feat = {0};
     if (size <= 0) return feat;
 
     static float mag_m[SAMPLE_COUNT];
@@ -227,10 +235,10 @@ InferenceFeatures compute_features(
     float y_p99, y_jerk, y_b15, y_b520, y_b2040; float y_top7[TOP7_COUNT];
     float z_p99, z_jerk, z_b15, z_b520, z_b2040; float z_top7[TOP7_COUNT];
 
-    compute_signal_metrics(mag_m, size, sampling_rate_hz, m_p99, m_jerk, m_b15, m_b520, m_b2040, m_top7);
-    compute_signal_metrics(mag_x, size, sampling_rate_hz, x_p99, x_jerk, x_b15, x_b520, x_b2040, x_top7);
-    compute_signal_metrics(mag_y, size, sampling_rate_hz, y_p99, y_jerk, y_b15, y_b520, y_b2040, y_top7);
-    compute_signal_metrics(mag_z, size, sampling_rate_hz, z_p99, z_jerk, z_b15, z_b520, z_b2040, z_top7);
+    compute_signal_metrics(mag_m, size, sampling_rate_hz, &m_p99, &m_jerk, &m_b15, &m_b520, &m_b2040, m_top7);
+    compute_signal_metrics(mag_x, size, sampling_rate_hz, &x_p99, &x_jerk, &x_b15, &x_b520, &x_b2040, x_top7);
+    compute_signal_metrics(mag_y, size, sampling_rate_hz, &y_p99, &y_jerk, &y_b15, &y_b520, &y_b2040, y_top7);
+    compute_signal_metrics(mag_z, size, sampling_rate_hz, &z_p99, &z_jerk, &z_b15, &z_b520, &z_b2040, z_top7);
 
     float x_zcr = compute_zcr(mag_x, size);
     float y_zcr = compute_zcr(mag_y, size);

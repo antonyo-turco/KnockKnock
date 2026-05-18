@@ -8,10 +8,8 @@
 //  Nyquist     = SAMPLING_RATE_HZ / 2 = 50 Hz
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr int   SAMPLE_COUNT     = 256;
-static constexpr int   FFT_SIZE         = 256;
-static constexpr float SAMPLING_RATE_HZ = 100.0f;
-static constexpr int   SAMPLE_PERIOD_MS = 10;
+#ifdef __cplusplus
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Novelty buffer  (used during EXPLORING phase)
@@ -27,8 +25,21 @@ static constexpr int   SAMPLE_PERIOD_MS = 10;
 //  (raise) or too slow (lower).
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+static constexpr int   SAMPLE_COUNT     = 256;
+static constexpr int   FFT_SIZE         = 256;
+static constexpr float SAMPLING_RATE_HZ = 100.0f;
+static constexpr int   SAMPLE_PERIOD_MS = 10;
 static constexpr int   NOVELTY_BUFFER_SIZE = 200;
 static constexpr float NOVELTY_THRESHOLD   = 1.5f;
+#else
+#define SAMPLE_COUNT     256
+#define FFT_SIZE         256
+#define SAMPLING_RATE_HZ 100.0f
+#define SAMPLE_PERIOD_MS 10
+#define NOVELTY_BUFFER_SIZE 200
+#define NOVELTY_THRESHOLD   1.5f
+#endif
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Thresholds and timings - adjust these for your use case

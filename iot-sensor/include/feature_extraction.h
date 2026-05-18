@@ -1,8 +1,13 @@
 #ifndef FEATURE_EXTRACTION_H
 #define FEATURE_EXTRACTION_H
 
-
+#include <stdint.h>
+#include <stdbool.h>
 #include "config.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Feature vector — 45 dimensions total
@@ -22,9 +27,9 @@
 //  [38-44] z  top7_freq[0..6]
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr int TOP7_COUNT = 7;
+#define TOP7_COUNT 7
 
-struct InferenceFeatures {
+typedef struct InferenceFeatures {
     float impact_score;
 
     // ── p99 ──────────────────────────────────────────────────────────────────
@@ -54,7 +59,7 @@ struct InferenceFeatures {
     // Both are needed: sin alone is ambiguous (morning == afternoon).
     float time_sin;   // sin(2π * minute_of_day / 1440)
     float time_cos;   // cos(2π * minute_of_day / 1440)
-};
+} InferenceFeatures;
 
 // Compute all features for one window.
 // time_sin and time_cos must be computed by the caller from the current RTC
@@ -70,6 +75,10 @@ InferenceFeatures compute_features(
 
 // Helper: convert current RTC time to (time_sin, time_cos).
 // Returns false if the RTC has not been synced yet (time is invalid).
-bool get_time_features(float &time_sin_out, float &time_cos_out);
+bool get_time_features(float *time_sin_out, float *time_cos_out);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // FEATURE_EXTRACTION_H

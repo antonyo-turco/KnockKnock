@@ -16,15 +16,12 @@
 #include "esp_dsp.h"
 #include "esp_event.h"
 
+#include <stdbool.h>
 #include "config.h"
 #include "ADXL362_utils.h"
-#include "ml_controller.h"
 
-extern "C" {
 #include "secure_store.h"
 #include "esp_now_comm.h"
-}
-#include "Arduino.h"
 
 static const char *TAG = "MAIN";
 
@@ -84,26 +81,12 @@ static void enter_deep_sleep(void)
 * ADXL362 sample
 * ===============*/
 static adxl362_handle_t sensor_h = NULL;
-static bool read_sample(Sample &s) {
-    if (sensor_h == NULL) return false;
-
-    adxl362_raw_data_t raw;
-    if (adxl362_read_raw(sensor_h, &raw) == ESP_OK) {
-        // Applichiamo il SIGNAL_GAIN ai valori raw
-        s.x = static_cast<int16_t>(raw.x * SIGNAL_GAIN);
-        s.y = static_cast<int16_t>(raw.y * SIGNAL_GAIN);
-        s.z = static_cast<int16_t>(raw.z * SIGNAL_GAIN);
-        return true;
-    }
-    return false;
-}
 
 /* =========================================================
  *  app_main
  * ========================================================= */
-extern "C" void app_main(void)
+void app_main(void)
 {
-    initArduino();
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
 
     if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {

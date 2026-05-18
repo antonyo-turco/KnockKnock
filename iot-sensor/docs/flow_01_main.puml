@@ -1,0 +1,62 @@
+@startuml KnockKnock_app_main
+skinparam ActivityBackgroundColor #1e1e2e
+skinparam ActivityBorderColor #89b4fa
+skinparam ActivityFontColor #cdd6f4
+skinparam ActivityFontSize 13
+skinparam ArrowColor #89b4fa
+skinparam NoteBackgroundColor #313244
+skinparam NoteBorderColor #6c7086
+skinparam NoteFontColor #cdd6f4
+skinparam PartitionBackgroundColor #181825
+skinparam PartitionBorderColor #585b70
+
+title KnockKnock IoT Sensor — app_main (routing)
+
+start
+
+:nvs_flash_init();
+note right: Required before any\nNVS / WiFi / ESP-NOW call
+
+:wakeup = esp_sleep_get_wakeup_cause();
+:g_sensor = sensor_init();
+
+if (sensor OK?) then (NO)
+  :ESP_LOGE + vTaskDelay(5s);
+  :esp_restart();
+  stop
+endif
+
+partition "NVS Probes — restore RTC flags after power cut" {
+  note right
+    Blob size check only —
+    no data loaded into RAM
+  end note
+
+  if (!rtc_is_trained) then (YES)
+    if (NVS "antitheft/kmeans"\nsize == sizeof(KMeansModel)) then (YES)
+      :rtc_is_trained = true;
+    endif
+  endif
+
+  if (!rtc_is_provisioned) then (YES)
+    if (NVS "storage/hub_mac"\nsize == 6) then (YES)
+      :rtc_is_provisioned = true;
+    endif
+  endif
+}
+
+if (wakeup == EXT0?) then (YES)
+  :**PATH B** — knock detected;
+  detach
+else (NO)
+  if (wakeup == TIMER?) then (YES)
+    :**PATH C** — 24h sync;
+    detach
+  else (NO)
+    :**PATH A** — first boot / power cut;
+    detach
+  endif
+endif
+
+stop
+@enduml

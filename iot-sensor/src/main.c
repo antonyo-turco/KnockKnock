@@ -425,6 +425,43 @@ void app_main(void) {
     esp_restart();
   }
 
+  // ── Restore RTC flags from NVS after a power cut ──────────────────────────
+  // RTC_DATA_ATTR memory survives deep sleep but is zeroed on power-on reset.
+  // Restore the flags with lightweight NVS probes (blob-size checks only).
+  // The full model is loaded later, inside ml_processor_task, only when
+  // inference is actually needed.  PMK/LMK/MAC are loaded lazily by
+  // hub_comm_init(), which is called only when the hub must be contacted.
+  {
+    nvs_handle_t _nvs;
+
+    // ── rtc_is_trained: check that the "kmeans" blob exists and is the right
+    //    size — training_save() only writes a finalised model, so size match
+    //    is sufficient proof that a valid model is present.
+    if (!rtc_is_trained &&
+        nvs_open("antitheft", NVS_READONLY, &_nvs) == ESP_OK) {
+      size_t _len = 0;
+      if (nvs_get_blob(_nvs, "kmeans", NULL, &_len) == ESP_OK &&
+          _len == sizeof(KMeansModel)) {
+        rtc_is_trained = true;
+        ESP_LOGI(TAG, "NVS: model key found (%u B) — rtc_is_trained restored.",
+                 (unsigned)_len);
+      }
+      nvs_close(_nvs);
+    }
+
+    // ── rtc_is_provisioned: check that the hub_mac blob (6 bytes) exists.
+    //    No WiFi/ESP-NOW initialisation needed for this check.
+    if (!rtc_is_provisioned &&
+        nvs_open("storage", NVS_READONLY, &_nvs) == ESP_OK) {
+      size_t _len = 0;
+      if (nvs_get_blob(_nvs, "hub_mac", NULL, &_len) == ESP_OK && _len == 6) {
+        rtc_is_provisioned = true;
+        ESP_LOGI(TAG, "NVS: hub_mac found — rtc_is_provisioned restored.");
+      }
+      nvs_close(_nvs);
+    }
+  }
+
   // ═════════════════════════════════════════════════════════════════════════
   //  PATH A — First boot / manual reset
   // ═════════════════════════════════════════════════════════════════════════
@@ -497,6 +534,25 @@ void app_main(void) {
     if (!rtc_is_trained) {
       ESP_LOGW(TAG, "No trained model — need first-boot training. Restarting.");
       esp_restart();
+    }
+
+    // ── Clock validity check ───────────────────────────────────────────────
+    // If the RTC was never synced (e.g. power loss wiped RTC memory but NVS
+    // survived), request time from the hub before running ML inference.
+    // A Unix timestamp < 1 000 000 000 means the clock is at its epoch default
+    // (i.e., it has never been set — any date before year 2001 is invalid).
+    struct timeval tv_check;
+    gettimeofday(&tv_check, NULL);
+    if (tv_check.tv_sec < 1000000000L) {
+      ESP_LOGW(TAG, "RTC not synced (ts=%lld) — requesting time from hub.",
+               (long long)tv_check.tv_sec);
+      if (hub_comm_init() == ESP_OK) {
+        hub_info_t sync_info;
+        if (!hub_comm_get_information(&sync_info, 5000, 3)) {
+          ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without valid time.");
+        }
+        // hub_comm_get_information() calls settimeofday() internally on success
+      }
     }
 
     // Create the inter-task semaphore

@@ -1,0 +1,58 @@
+@startuml PATH_A
+skinparam ActivityBackgroundColor #1e1e2e
+skinparam ActivityBorderColor #a6e3a1
+skinparam ActivityFontColor #cdd6f4
+skinparam ActivityFontSize 13
+skinparam ArrowColor #a6e3a1
+skinparam NoteBackgroundColor #313244
+skinparam NoteBorderColor #6c7086
+skinparam NoteFontColor #cdd6f4
+
+title PATH A — First Boot / Reset / Power Cut\n(wakeup != EXT0 and != TIMER)
+
+start
+
+:hub_comm_init();
+note right: Loads PMK/LMK from secure NVS\nLoads hub_mac -> sets s_is_paired
+
+if (!rtc_is_provisioned?) then (YES — not yet paired)
+  if (!hub_comm_is_paired()?) then (YES — MAC not in NVS)
+    :hub_comm_pair(15 000 ms);
+    if (pairing succeeded?) then (NO)
+      :ESP_LOGE "Pairing timeout";
+      :goto_deep_sleep();
+      note right: Will retry on next boot\nor timer wakeup
+      stop
+    endif
+  endif
+  :rtc_is_provisioned = true;
+  :rtc_threshold_mg = THRESHOLD_MG;
+else (NO — already paired)
+  note right: MAC already in NVS\nskip pairing
+endif
+
+:hub_comm_get_information(timeout=5s, retry=3);
+note right: Clock sync via settimeofday()\nalready integrated in the function
+
+if (got_info AND do_reset?) then (YES)
+  :handle_hub_reset();
+  note right: Erases hub_mac + model from NVS\nesp_restart() -> back to PATH A
+  stop
+endif
+
+if (!rtc_is_trained\nOR (got_info AND do_ml_training)?) then (YES — training needed)
+  if (got_info AND ml_duration_ms > 0?) then (YES — hub specifies duration)
+    :exp_ms = ml_duration_ms / 2\ntrn_ms = ml_duration_ms / 2;
+  else (NO — use config.h defaults)
+    :exp_ms = EXPLORING_DURATION_MS\ntrn_ms = TRAINING_DURATION_MS;
+  endif
+  :run_training_phase(exp_ms, trn_ms);
+  note right: See flow_05_training.puml
+else (NO — model already present and valid)
+  :skip training;
+endif
+
+:goto_deep_sleep();
+note right: Arms EXT0 (ADXL362 INT1)\n+ TIMER (SYNC_INTERVAL_SEC)
+stop
+@enduml

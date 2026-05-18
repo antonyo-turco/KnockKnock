@@ -9,25 +9,25 @@
 //  Tuneable parameters
 // ─────────────────────────────────────────────
 
-static constexpr int   KMEANS_K        = 4;
+#define KMEANS_K        10
 
-// 45 features — see feature_extraction.h for full index map
-static constexpr int   FEATURE_DIM     = 45;
+// 47 features — see feature_extraction.h for full index map
+#define FEATURE_DIM     47
 
 // Threshold = max(mean_dist + SIGMA_MULT * sigma, dist_max * MAX_DIST_MARGIN)
-static constexpr float SIGMA_MULT      = 3.0f;
-static constexpr float MAX_DIST_MARGIN = 1.1f;
-static constexpr float MIN_THRESHOLD   = 0.30f;
+#define SIGMA_MULT      3.0f
+#define MAX_DIST_MARGIN 1.1f
+#define MIN_THRESHOLD   0.30f
 
 // Minimum novelty buffer entries required before k++ is allowed.
 // Must be >= KMEANS_K.  Warn if fewer entries collected at end of EXPLORING.
-static constexpr int   MIN_NOVELTY_FOR_SEEDING = 20;
+#define MIN_NOVELTY_FOR_SEEDING 20
 
 // ─────────────────────────────────────────────
 //  Model struct  (saved to NVS after TRAINING)
 // ─────────────────────────────────────────────
 
-struct KMeansModel {
+typedef struct KMeansModel {
     float    centroids[KMEANS_K][FEATURE_DIM];
     uint32_t centroid_counts[KMEANS_K];
 
@@ -46,46 +46,46 @@ struct KMeansModel {
     uint32_t total_samples;
     bool     initialised;   // true after k++ seeding (end of EXPLORING)
     bool     finalised;     // true after training_finalize() (end of TRAINING)
-};
+} KMeansModel;
 
 // ─────────────────────────────────────────────
 //  API
 // ─────────────────────────────────────────────
 
 // ── Phase 0: init ────────────────────────────
-void training_init(KMeansModel &model);
+void training_init(KMeansModel *model);
 
 // ── Phase 1: EXPLORING (24 h) ────────────────
 // Call every window.  Updates Welford normalisation + novelty buffer.
-void exploring_update(KMeansModel &model, const InferenceFeatures &features);
+void exploring_update(KMeansModel *model, const InferenceFeatures *features);
 
 // Call once at end of EXPLORING.
 // Freezes normalisation, runs k++ on novelty buffer → centroids placed.
 // Returns false if too few novel samples were collected (model may be poor).
-bool exploring_finalize(KMeansModel &model);
+bool exploring_finalize(KMeansModel *model);
 
 // How full is the novelty buffer? (0-100 %)
-uint8_t exploring_novelty_pct();
+uint8_t exploring_novelty_pct(void);
 
 // ── Phase 2: TRAINING (24 h) ─────────────────
 // Call every window.  Updates centroids + distance stats with frozen normalisation.
-void training_update(KMeansModel &model, const InferenceFeatures &features);
+void training_update(KMeansModel *model, const InferenceFeatures *features);
 
 // Call once at end of TRAINING.  Computes thresholds and marks model finalised.
-void training_finalize(KMeansModel &model);
+void training_finalize(KMeansModel *model);
 
 // ── NVS persistence ───────────────────────────
-bool training_save(const KMeansModel &model);
-bool training_load(KMeansModel &model);
-void training_erase_nvs();
+bool training_save(const KMeansModel *model);
+bool training_load(KMeansModel *model);
+void training_erase_nvs(void);
 
 // ── Inference ────────────────────────────────
 // Returns true = baseline.  out_distance = normalised dist to nearest centroid.
-bool training_is_baseline(const KMeansModel &model,
-                           const InferenceFeatures &features,
-                           float *out_distance = nullptr,
-                           int   *out_cluster  = nullptr);
+bool training_is_baseline(const KMeansModel *model,
+                           const InferenceFeatures *features,
+                           float *out_distance,
+                           int   *out_cluster);
 
-void training_print_model(const KMeansModel &model);
+void training_print_model(const KMeansModel *model);
 
 #endif // TINYML_TRAINING_H

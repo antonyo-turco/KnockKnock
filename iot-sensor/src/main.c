@@ -1,186 +1,549 @@
 /**
- * @file main.cpp
- * @brief ADXL362 motion-triggered deep sleep example for ESP32-C3.
+ * @file main.c
+ * @brief KnockKnock IoT Sensor — Main Entry Point
+ *
+ * Boot flow:
+ *  ┌──────────────────────────────────────────────────────────────┐
+ *  │  FIRST BOOT / RESET                                          │
+ *  │   1. hub_comm_init()                                         │
+ *  │   2. If not paired: hub_comm_pair() → save MAC in NVS        │
+ *  │   3. hub_comm_get_information() → sync clock                 │
+ *  │   4. If !trained (or hub requests): run_training_phase()     │
+ *  │   5. training_save() → NVS                                   │
+ *  │   6. goto_deep_sleep()                                       │
+ *  ├──────────────────────────────────────────────────────────────┤
+ *  │  SENSOR WAKEUP (EXT0 – ADXL362 activity interrupt)          │
+ *  │   1. Start sensor_sampler_task  (core 0, high priority)      │
+ *  │   2. Start ml_processor_task   (core 1, waits on semaphore)  │
+ *  │   3. ML inference:                                           │
+ *  │       BASELINE  → adjust activity threshold, deep sleep      │
+ *  │       DEVIATION → send alarm, sync clock, deep sleep         │
+ *  ├──────────────────────────────────────────────────────────────┤
+ *  │  TIMER WAKEUP (24-h hub sync)                                │
+ *  │   1. hub_comm_init() → hub_comm_get_information()            │
+ *  │   2. Handle reset / re-training requests from hub            │
+ *  │   3. goto_deep_sleep()                                       │
+ *  └──────────────────────────────────────────────────────────────┘
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
+
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+
+#include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
-#include "driver/gpio.h"
-#include "driver/rtc_io.h"
-#include "adxl362.h"
-#include "fft_processor.h"
-#include "esp_dsp.h"
-#include "esp_event.h"
+#include "esp_timer.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
-#include <stdbool.h>
-#include "config.h"
 #include "ADXL362_utils.h"
-
-#include "secure_store.h"
+#include "config.h"
+#include "feature_extraction.h"
 #include "hub_communication.h"
+#include "secure_store.h"
+#include "tinyml_baseline_model.h"
+#include "tinyml_training.h"
 
-static const char *TAG_MAIN = "MAIN";
+static const char *TAG = "MAIN";
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  RTC memory — persists across deep sleep, reset to 0 on power-on
+// ─────────────────────────────────────────────────────────────────────────────
 
+/** Current ADXL362 activity threshold (mg). Adaptively tuned at runtime. */
+RTC_DATA_ATTR static uint16_t rtc_threshold_mg = THRESHOLD_MG;
 
+/** Timestamp (seconds since epoch) of the last EXT0 wakeup. */
+RTC_DATA_ATTR static int64_t rtc_last_sensor_wakeup_sec = 0;
 
+/** True once hub MAC has been saved to NVS and pairing is confirmed. */
+RTC_DATA_ATTR static bool rtc_is_provisioned = false;
 
+/** True once a model has been trained and saved to NVS. */
+RTC_DATA_ATTR static bool rtc_is_trained = false;
 
-/* =========================================================
- *  Helper: go to deep sleep, wake on INT1 HIGH (activity)
- * ========================================================= */
-static void enter_deep_sleep(void)
-{
-    ESP_LOGI(TAG_MAIN, "Going to deep sleep... waiting for ADXL362 INT1 to wake up.");
-    ESP_LOGI(TAG_MAIN, "-----------------------------------------------------------");
+// ─────────────────────────────────────────────────────────────────────────────
+//  Task inter-communication
+// ─────────────────────────────────────────────────────────────────────────────
 
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << MY_PIN_INT1),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_ENABLE,  /* keep LOW when idle */
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
+/** Shared sample buffers — written by sampler task, read by ML task. */
+static int16_t g_xb[SAMPLE_COUNT];
+static int16_t g_yb[SAMPLE_COUNT];
+static int16_t g_zb[SAMPLE_COUNT];
 
-    int wait_ms = 0;
-    while (gpio_get_level(MY_PIN_INT1) == 1 && wait_ms < 3000) {
-        if (wait_ms == 0) {
-            ESP_LOGW(TAG_MAIN, "INT1 is HIGH - waiting for it to go LOW before sleeping...");
-        }
-        vTaskDelay(pdMS_TO_TICKS(20));
-        wait_ms += 20;
-    }
+/** Binary semaphore: given when g_xb/g_yb/g_zb are ready. */
+static SemaphoreHandle_t s_data_ready_sem = NULL;
 
-    if (gpio_get_level(MY_PIN_INT1) == 1) {
-        ESP_LOGE(TAG_MAIN, "INT1 stuck HIGH after 3s - sleeping anyway (may wake immediately)");
-    } else {
-        ESP_LOGI(TAG_MAIN, "INT1 is LOW - safe to sleep.");
-    }
+/** Global sensor handle initialised in app_main. */
+static adxl362_handle_t g_sensor = NULL;
 
-    rtc_gpio_init(MY_PIN_INT1);
-    rtc_gpio_set_direction(MY_PIN_INT1, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pulldown_en(MY_PIN_INT1);
-    rtc_gpio_pullup_dis(MY_PIN_INT1);
+// ─────────────────────────────────────────────────────────────────────────────
+//  Internal helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-    esp_sleep_enable_ext0_wakeup(MY_PIN_INT1, 1);
-    esp_deep_sleep_start();
+/**
+ * @brief Erase hub pairing data from NVS and flag the device as unprovisioned.
+ *        Called when the hub requests a full reset.
+ */
+static void handle_hub_reset(void) {
+  ESP_LOGI(TAG, "Hub requested device reset — erasing pairing data.");
+  nvs_handle_t nvs;
+  if (nvs_open("storage", NVS_READWRITE, &nvs) == ESP_OK) {
+    nvs_erase_key(nvs, "hub_mac");
+    nvs_commit(nvs);
+    nvs_close(nvs);
+  }
+  training_erase_nvs();
+  rtc_is_provisioned = false;
+  rtc_is_trained = false;
+  rtc_threshold_mg = THRESHOLD_MG;
+  esp_restart();
 }
 
+/**
+ * @brief Configure the ADXL362 with the current adaptive threshold and enter
+ *        deep sleep.  Both EXT0 (sensor interrupt) and timer (24-h sync) are
+ *        armed as wakeup sources.
+ */
+static void goto_deep_sleep(void) {
+  ESP_LOGI(TAG, "Configuring deep sleep. ADXL362 threshold = %u mg",
+           rtc_threshold_mg);
 
+  if (g_sensor) {
+    adxl362_set_activity_threshold(g_sensor, rtc_threshold_mg, ACTIVITY_TIME_MS,
+                                   true);
+    // Stop then restart so the new threshold takes effect
+    adxl362_stop_measurement(g_sensor);
+    adxl362_start_measurement(g_sensor);
+  }
 
+  // EXT0: ADXL362 INT1 line goes high on activity
+  esp_sleep_enable_ext0_wakeup(MY_PIN_INT1, 1);
 
+  // Timer: periodic 24-h hub sync
+  esp_sleep_enable_timer_wakeup((uint64_t)SYNC_INTERVAL_SEC * 1000000ULL);
 
+  esp_deep_sleep_start();
+  // Never returns
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Training phase
+// ─────────────────────────────────────────────────────────────────────────────
 
-/*===============
-* ADXL362 sample
-* ===============*/
-static adxl362_handle_t sensor_h = NULL;
+/**
+ * @brief Collect windows of accelerometer data and run them through the
+ *        EXPLORING → TRAINING pipeline.
+ *
+ * @param exploring_ms  Duration of the EXPLORING phase in milliseconds.
+ * @param training_ms   Duration of the TRAINING phase in milliseconds.
+ *
+ * On success the finalised model is saved to NVS and rtc_is_trained is set.
+ */
+static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
+  ESP_LOGI(TAG, "=== TRAINING START: exploring=%lu s  training=%lu s ===",
+           exploring_ms / 1000UL, training_ms / 1000UL);
 
-/* =========================================================
- *  app_main
- * ========================================================= */
-void app_main(void)
-{
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+  if (!g_sensor) {
+    ESP_LOGE(TAG, "Sensor not initialised — aborting training.");
+    return;
+  }
 
-    if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
-        ESP_LOGI(TAG_MAIN, "=== Woken up by ADXL362 (motion detected!) ===");
-        
-        ESP_ERROR_CHECK(hub_comm_init());
-        
-        if (!hub_comm_is_paired()) {
-            ESP_LOGI(TAG_MAIN, "Not paired. Waiting for pairing from Hub (10 seconds)...");
-            hub_comm_pair(10000);
-        }
+  KMeansModel model;
+  training_init(&model);
 
-        if (hub_comm_is_paired()) {
-            ESP_LOGI(TAG_MAIN, "Sending knock alarm...");
-            bool success = hub_comm_send_alarm(1, 3); // Alarm code 1, up to 3 retries
-            if (success) {
-                ESP_LOGI(TAG_MAIN, "Knock alert sent successfully to Hub");
-            } else {
-                ESP_LOGE(TAG_MAIN, "Failed to send knock alert to Hub");
-            }
-        } else {
-            ESP_LOGE(TAG_MAIN, "Device is not paired. Cannot send alarm.");
-        }
+  // ── Phase 1: EXPLORING ────────────────────────────────────────────────────
+  ESP_LOGI(TAG, "--- EXPLORING ---");
+  int64_t deadline_us = esp_timer_get_time() + (int64_t)exploring_ms * 1000LL;
+  uint32_t win_seq = 0;
+
+  while (esp_timer_get_time() < deadline_us) {
+    // Sample one window at the configured ODR
+    TickType_t xLastWake = xTaskGetTickCount();
+    const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+      vTaskDelayUntil(&xLastWake, xPeriod);
+      adxl362_raw_data_t raw;
+      if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
+        g_xb[i] = raw.x;
+        g_yb[i] = raw.y;
+        g_zb[i] = raw.z;
+      } else {
+        g_xb[i] = 0;
+        g_yb[i] = 0;
+        g_zb[i] = 0;
+      }
+    }
+
+    float time_sin, time_cos;
+    get_time_features(&time_sin, &time_cos);
+    InferenceFeatures feat = compute_features(
+        g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+
+    exploring_update(&model, &feat);
+    win_seq++;
+
+    if (win_seq % 150 == 0) {
+      uint32_t elapsed_ms =
+          (uint32_t)((esp_timer_get_time() -
+                      (deadline_us - (int64_t)exploring_ms * 1000LL)) /
+                     1000LL);
+      ESP_LOGI(TAG, "[EXPLORE] win=%lu  n=%lu  novel=%u%%  elapsed=%lu s",
+               (unsigned long)win_seq, (unsigned long)model.total_samples,
+               exploring_novelty_pct(), (unsigned long)(elapsed_ms / 1000UL));
+    }
+  }
+
+  bool ok = exploring_finalize(&model);
+  if (!ok) {
+    ESP_LOGW(
+        TAG,
+        "[EXPLORE] WARNING: novelty buffer sparse — model may be imprecise.");
+  }
+  ESP_LOGI(TAG, "EXPLORING done after %lu windows.", (unsigned long)win_seq);
+
+  // ── Phase 2: TRAINING ─────────────────────────────────────────────────────
+  ESP_LOGI(TAG, "--- TRAINING ---");
+  deadline_us = esp_timer_get_time() + (int64_t)training_ms * 1000LL;
+  win_seq = 0;
+
+  while (esp_timer_get_time() < deadline_us) {
+    TickType_t xLastWake = xTaskGetTickCount();
+    const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+      vTaskDelayUntil(&xLastWake, xPeriod);
+      adxl362_raw_data_t raw;
+      if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
+        g_xb[i] = raw.x;
+        g_yb[i] = raw.y;
+        g_zb[i] = raw.z;
+      } else {
+        g_xb[i] = 0;
+        g_yb[i] = 0;
+        g_zb[i] = 0;
+      }
+    }
+
+    float time_sin, time_cos;
+    get_time_features(&time_sin, &time_cos);
+    InferenceFeatures feat = compute_features(
+        g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+
+    training_update(&model, &feat);
+    win_seq++;
+
+    if (win_seq % 150 == 0) {
+      uint32_t elapsed_ms =
+          (uint32_t)((esp_timer_get_time() -
+                      (deadline_us - (int64_t)training_ms * 1000LL)) /
+                     1000LL);
+      ESP_LOGI(TAG, "[TRAIN] win=%lu  n=%lu  %lu%%", (unsigned long)win_seq,
+               (unsigned long)model.total_samples,
+               (unsigned long)(elapsed_ms * 100UL / training_ms));
+    }
+  }
+
+  training_finalize(&model);
+  ESP_LOGI(TAG, "TRAINING done after %lu windows.", (unsigned long)win_seq);
+
+  // ── Save to NVS ───────────────────────────────────────────────────────────
+  if (training_save(&model)) {
+    rtc_is_trained = true;
+    ESP_LOGI(TAG, "Model saved to NVS. rtc_is_trained = true.");
+  } else {
+    ESP_LOGE(TAG, "Failed to save model to NVS!");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Sensor sampler task  (Core 0 — tight real-time loop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Fills g_xb / g_yb / g_zb with SAMPLE_COUNT samples at
+ * SAMPLING_RATE_HZ, then signals the ML task via semaphore.
+ */
+static void sensor_sampler_task(void *arg) {
+  ESP_LOGI(TAG, "[SAMPLER] Task started.");
+
+  TickType_t xLastWake = xTaskGetTickCount();
+  const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
+
+  for (int i = 0; i < SAMPLE_COUNT; i++) {
+    vTaskDelayUntil(&xLastWake, xPeriod);
+    adxl362_raw_data_t raw;
+    if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
+      g_xb[i] = raw.x;
+      g_yb[i] = raw.y;
+      g_zb[i] = raw.z;
     } else {
-        ESP_LOGI(TAG_MAIN, "=== First boot / manual reset ===");
-        ESP_LOGI(TAG_MAIN, "No active session on first boot - configuring and sleeping.");
+      g_xb[i] = 0;
+      g_yb[i] = 0;
+      g_zb[i] = 0;
+    }
+  }
 
-        adxl362_handle_t s = sensor_init();
-        if (!s) {
-            while (true) {
-                ESP_LOGE(TAG_MAIN, "ADXL362 not found! Check wiring:");
-                ESP_LOGE(TAG_MAIN, "  MOSI -> GPIO 23  |  MISO -> GPIO 19");
-                ESP_LOGE(TAG_MAIN, "  SCLK -> GPIO 18  |  CS   -> GPIO 5");
-                ESP_LOGE(TAG_MAIN, "  VDD  -> 3.3V      |  GND  -> GND");
-                vTaskDelay(pdMS_TO_TICKS(5000));
-            }
-        }
-        enter_deep_sleep();
-        return;
+  ESP_LOGI(TAG, "[SAMPLER] Window ready — releasing ML task.");
+  xSemaphoreGive(s_data_ready_sem);
+  vTaskDelete(NULL);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ML processor task  (Core 1 — waits for sampler, then runs inference)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Waits for the sampler to fill the buffer, computes features, runs
+ *        inference, and either adjusts the threshold (baseline) or sends an
+ *        alarm (deviation) before entering deep sleep.
+ */
+static void ml_processor_task(void *arg) {
+  // Block until the window is complete
+  xSemaphoreTake(s_data_ready_sem, portMAX_DELAY);
+  ESP_LOGI(TAG, "[ML] Running inference...");
+
+  // ── Compute time features ─────────────────────────────────────────────────
+  float time_sin, time_cos;
+  get_time_features(&time_sin, &time_cos);
+
+  // ── Feature extraction ────────────────────────────────────────────────────
+  InferenceFeatures feat = compute_features(
+      g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+
+  // ── Load model ────────────────────────────────────────────────────────────
+  KMeansModel model;
+  if (!training_load(&model)) {
+    ESP_LOGE(TAG, "[ML] No valid model in NVS — going back to sleep.");
+    goto_deep_sleep();
+    // Never returns
+  }
+
+  // ── Inference ─────────────────────────────────────────────────────────────
+  float dist = 0.0f;
+  int cluster = -1;
+  bool is_baseline = training_is_baseline(&model, &feat, &dist, &cluster);
+
+  ESP_LOGI(TAG, "[ML] impact=%.4f  m_p99=%.2f  dist=%.4f  C%d  %s",
+           feat.impact_score, feat.m_p99, dist, cluster,
+           is_baseline ? "BASELINE" : "*** DEVIATION ***");
+
+  // ── Current time (for threshold adaptation) ───────────────────────────────
+  struct timeval tv_now;
+  gettimeofday(&tv_now, NULL);
+
+  if (is_baseline) {
+    // ── Adaptive threshold logic ──────────────────────────────────────────
+    int64_t delta_sec =
+        (rtc_last_sensor_wakeup_sec > 0)
+            ? (tv_now.tv_sec - rtc_last_sensor_wakeup_sec)
+            : (THRESHOLD_ADJUST_TIME_SEC + 1); // treat as "ok" on first event
+
+    if (delta_sec < THRESHOLD_ADJUST_TIME_SEC) {
+      // Waking up too frequently — raise threshold to reduce false wakes
+      rtc_threshold_mg = (uint16_t)(rtc_threshold_mg + THRESHOLD_STEP_UP);
+      if (rtc_threshold_mg > THRESHOLD_MG_MAX) {
+        rtc_threshold_mg = THRESHOLD_MG_MAX;
+      }
+      ESP_LOGI(TAG, "[THRESHOLD] Too frequent (delta=%llds). Raised to %u mg.",
+               (long long)delta_sec, rtc_threshold_mg);
+    } else {
+      // Normal timing — gently lower threshold to stay responsive
+      if (rtc_threshold_mg > THRESHOLD_STEP_DOWN + THRESHOLD_MG_MIN) {
+        rtc_threshold_mg = (uint16_t)(rtc_threshold_mg - THRESHOLD_STEP_DOWN);
+      } else {
+        rtc_threshold_mg = THRESHOLD_MG_MIN;
+      }
+      ESP_LOGI(TAG,
+               "[THRESHOLD] Normal timing (delta=%llds). Lowered to %u mg.",
+               (long long)delta_sec, rtc_threshold_mg);
     }
 
-    adxl362_handle_t sensor = sensor_init();
-    if (!sensor) {
-        ESP_LOGE(TAG_MAIN, "Could not init sensor after wake, restarting...");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_restart();
-        return;
+    // Remember when this sensor event happened
+    rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
+
+  } else {
+    // ── ANOMALY: send alarm and resync ────────────────────────────────────
+    ESP_LOGW(TAG, "[ML] DEVIATION detected — sending alarm to hub.");
+
+    ESP_ERROR_CHECK(hub_comm_init());
+
+    hub_comm_send_alarm(1 /* alarm_code */, 3 /* max_retries */);
+
+    hub_info_t info;
+    if (hub_comm_get_information(&info, 5000, 3)) {
+      // Clock already synced inside hub_comm_get_information()
+      if (info.do_reset) {
+        handle_hub_reset(); // Never returns
+      }
+      if (info.do_ml_training) {
+        // Hub requested re-training after alarm
+        uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                    : EXPLORING_DURATION_MS;
+        uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                    : TRAINING_DURATION_MS;
+        run_training_phase(exp_ms, trn_ms);
+      }
+    } else {
+      ESP_LOGW(
+          TAG,
+          "[ML] Hub unreachable after alarm. Continuing with existing model.");
+    }
+  }
+
+  goto_deep_sleep();
+  // Never returns
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+void app_main(void) {
+  // ── NVS flash init (mandatory before any NVS/wifi/esp-now call) ───────────
+  esp_err_t err = nvs_flash_init();
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
+      err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    err = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(err);
+
+  // ── Determine wakeup cause ────────────────────────────────────────────────
+  esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
+
+  // ── Sensor init (needed in all paths) ─────────────────────────────────────
+  g_sensor = sensor_init();
+  if (!g_sensor) {
+    ESP_LOGE(TAG, "ADXL362 initialisation failed. Retrying in 5 s...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    esp_restart();
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  PATH A — First boot / manual reset
+  // ═════════════════════════════════════════════════════════════════════════
+  if (wakeup != ESP_SLEEP_WAKEUP_EXT0 && wakeup != ESP_SLEEP_WAKEUP_TIMER) {
+    ESP_LOGI(TAG, "=== FIRST BOOT / RESET ===");
+
+    // ── Step 1: Init hub comms ────────────────────────────────────────────
+    ESP_ERROR_CHECK(hub_comm_init());
+
+    // ── Step 2: Pairing ───────────────────────────────────────────────────
+    if (!rtc_is_provisioned) {
+      if (!hub_comm_is_paired()) {
+        ESP_LOGI(TAG, "Not provisioned — waiting for hub pairing (15 s)...");
+        if (!hub_comm_pair(15000)) {
+          ESP_LOGE(TAG, "Pairing timeout. Sleeping and retrying on next boot.");
+          goto_deep_sleep();
+          // Never returns
+        }
+      }
+      // hub_comm_pair() saved the MAC to NVS internally
+      rtc_is_provisioned = true;
+      rtc_threshold_mg = THRESHOLD_MG;
+      ESP_LOGI(TAG, "Pairing successful. Device is now provisioned.");
+    } else {
+      ESP_LOGI(TAG, "Already provisioned — skipping pairing.");
     }
 
-    ESP_LOGI(TAG_MAIN, "Printing acceleration data. Will sleep after %d seconds of no motion.",
-             INACTIVITY_TIME_MS / 1000);
-    ESP_LOGI(TAG_MAIN, "-----------------------------------------------------------");
+    // ── Step 3: Sync clock + query hub for instructions ───────────────────
+    hub_info_t info;
+    bool got_info = hub_comm_get_information(&info, 5000, 3);
 
-    adxl362_data_mg_t prev = {0};
-    bool first_sample = true;
-    TickType_t last_motion_tick = xTaskGetTickCount();
-
-    const TickType_t grace = pdMS_TO_TICKS(600);
-    TickType_t start_tick = xTaskGetTickCount();
-
-    while (true) {
-        adxl362_data_mg_t cur;
-        if (adxl362_read_mg(sensor, &cur) == ESP_OK) {
-            ESP_LOGI(TAG_MAIN, "X: %7.1f mg  |  Y: %7.1f mg  |  Z: %7.1f mg",
-                     cur.x_mg, cur.y_mg, cur.z_mg);
-
-            if (!first_sample) {
-                float dx = cur.x_mg - prev.x_mg; if (dx < 0) dx = -dx;
-                float dy = cur.y_mg - prev.y_mg; if (dy < 0) dy = -dy;
-                float dz = cur.z_mg - prev.z_mg; if (dz < 0) dz = -dz;
-
-                if (dx + dy + dz > MOTION_DIFF_MG) {
-                    last_motion_tick = xTaskGetTickCount();
-                }
-            } else {
-                last_motion_tick = xTaskGetTickCount();
-                first_sample = false;
-            }
-
-            prev = cur;
-        }
-
-        bool grace_done = (xTaskGetTickCount() - start_tick) >= grace;
-
-        if (grace_done) {
-            TickType_t idle_ms = (xTaskGetTickCount() - last_motion_tick) * portTICK_PERIOD_MS;
-            if (idle_ms >= INACTIVITY_TIME_MS) {
-                ESP_LOGI(TAG_MAIN, "No motion for %d seconds - going to sleep.",
-                         INACTIVITY_TIME_MS / 1000);
-                enter_deep_sleep();
-                return;
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(200));
+    if (got_info) {
+      // Clock sync is done inside hub_comm_get_information()
+      if (info.do_reset) {
+        handle_hub_reset(); // Never returns
+      }
     }
+
+    // ── Step 4: Training (if needed or hub requested it) ──────────────────
+    bool need_training = !rtc_is_trained || (got_info && info.do_ml_training);
+
+    if (need_training) {
+      uint32_t exp_ms, trn_ms;
+      if (got_info && info.ml_duration_ms > 0) {
+        // Hub specified a total duration → split 50/50
+        exp_ms = info.ml_duration_ms / 2;
+        trn_ms = info.ml_duration_ms / 2;
+      } else {
+        exp_ms = EXPLORING_DURATION_MS;
+        trn_ms = TRAINING_DURATION_MS;
+      }
+      run_training_phase(exp_ms, trn_ms);
+    } else {
+      ESP_LOGI(TAG,
+               "Model already trained and hub did not request re-training.");
+    }
+
+    // ── Step 5: Deep sleep ────────────────────────────────────────────────
+    goto_deep_sleep();
+    // Never returns
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  PATH B — Sensor wakeup (ADXL362 activity interrupt)
+  // ═════════════════════════════════════════════════════════════════════════
+  else if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
+    ESP_LOGI(TAG, "=== SENSOR WAKEUP (knock detected) ===");
+
+    // If the device was never trained, fall back to first-boot path
+    if (!rtc_is_trained) {
+      ESP_LOGW(TAG, "No trained model — need first-boot training. Restarting.");
+      esp_restart();
+    }
+
+    // Create the inter-task semaphore
+    s_data_ready_sem = xSemaphoreCreateBinary();
+    if (!s_data_ready_sem) {
+      ESP_LOGE(TAG, "Failed to create semaphore. Rebooting.");
+      esp_restart();
+    }
+
+    // Sampler on Core 0 (high priority to keep sample timing precise)
+    xTaskCreatePinnedToCore(sensor_sampler_task, "sampler", 4096, NULL, 5, NULL,
+                            0);
+
+    // ML processor on Core 1 (waits on semaphore, heavy computation)
+    xTaskCreatePinnedToCore(ml_processor_task, "ml_proc", 8192, NULL, 4, NULL,
+                            1);
+
+    // app_main must not return — suspend it while the tasks run
+    vTaskSuspend(NULL);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  PATH C — Timer wakeup (24-h hub sync)
+  // ═════════════════════════════════════════════════════════════════════════
+  else { // wakeup == ESP_SLEEP_WAKEUP_TIMER
+    ESP_LOGI(TAG, "=== 24-H HUB SYNC ===");
+
+    ESP_ERROR_CHECK(hub_comm_init());
+
+    hub_info_t info;
+    if (hub_comm_get_information(&info, 5000, 3)) {
+      // Clock sync done inside hub_comm_get_information()
+      if (info.do_reset) {
+        handle_hub_reset(); // Never returns
+      }
+      if (info.do_ml_training) {
+        uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                    : EXPLORING_DURATION_MS;
+        uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                    : TRAINING_DURATION_MS;
+        run_training_phase(exp_ms, trn_ms);
+      }
+    } else {
+      ESP_LOGW(TAG, "Hub unreachable during 24-h sync. Skipping.");
+    }
+
+    goto_deep_sleep();
+    // Never returns
+  }
 }

@@ -10,7 +10,6 @@
 
 #ifdef __cplusplus
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  Novelty buffer  (used during EXPLORING phase)
 //
@@ -25,46 +24,89 @@
 //  (raise) or too slow (lower).
 // ─────────────────────────────────────────────────────────────────────────────
 
-
-static constexpr int   SAMPLE_COUNT     = 256;
-static constexpr int   FFT_SIZE         = 256;
+static constexpr int SAMPLE_COUNT = 256;
+static constexpr int FFT_SIZE = 256;
 static constexpr float SAMPLING_RATE_HZ = 100.0f;
-static constexpr int   SAMPLE_PERIOD_MS = 10;
-static constexpr int   NOVELTY_BUFFER_SIZE = 200;
-static constexpr float NOVELTY_THRESHOLD   = 1.5f;
+static constexpr int SAMPLE_PERIOD_MS = 10;
+static constexpr int NOVELTY_BUFFER_SIZE = 200;
+static constexpr float NOVELTY_THRESHOLD = 1.5f;
 #else
-#define SAMPLE_COUNT     256
-#define FFT_SIZE         256
+#define SAMPLE_COUNT 256
+#define FFT_SIZE 256
 #define SAMPLING_RATE_HZ 100.0f
 #define SAMPLE_PERIOD_MS 10
 #define NOVELTY_BUFFER_SIZE 200
-#define NOVELTY_THRESHOLD   1.5f
+#define NOVELTY_THRESHOLD 1.5f
 #endif
 
 /// ─────────────────────────────────────────────────────────────────────────────
-///  Thresholds and timings - adjust these for your use case
+///  Activity threshold for ADXL362 wakeup
+///  THRESHOLD_MG:     default wake threshold in milli-g
+///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
+///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG          150   /* 0.150g change from baseline - good for table knocks */
-#define ACTIVITY_TIME_MS        1   /* 1 sample @ 100Hz = 10ms - catches brief impulses */
-#define INACTIVITY_TIME_MS   5000   /* ms of no motion before going back to sleep */
-#define MOTION_DIFF_MG        80.0f /* mg change between samples to count as motion */
+#define THRESHOLD_MG     150   /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN  50   /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 250   /* ceiling: very insensitive                 */
 
-#define SIGNAL_GAIN  1.0f  // gain factor to apply to raw accelerometer data before feature extraction
+/// ─────────────────────────────────────────────────────────────────────────────
+///  Adaptive threshold tuning
+///  If the sensor woke up within THRESHOLD_ADJUST_TIME_SEC of the last wakeup
+///  (= too often) → raise threshold by THRESHOLD_STEP_UP.
+///  Otherwise → lower it by THRESHOLD_STEP_DOWN (back to baseline sensitivity).
+/// ─────────────────────────────────────────────────────────────────────────────
+#define THRESHOLD_ADJUST_TIME_SEC 30  /* window for "waking too often" check */
+#define THRESHOLD_STEP_UP         10  /* mg to raise when too frequent       */
+#define THRESHOLD_STEP_DOWN        5  /* mg to lower when timing is normal   */
+
+/// ─────────────────────────────────────────────────────────────────────────────
+///  Deep-sleep wakeup sources
+///  SYNC_INTERVAL_SEC: periodic timer wakeup for 24-h hub sync
+/// ─────────────────────────────────────────────────────────────────────────────
+#define SYNC_INTERVAL_SEC (24UL * 3600UL)   /* 24 hours in seconds          */
+
+/// ─────────────────────────────────────────────────────────────────────────────
+///  ADXL362 activity/inactivity detector settings
+/// ─────────────────────────────────────────────────────────────────────────────
+#define ACTIVITY_TIME_MS    1       /* 1 sample @ 100 Hz = 10 ms            */
+#define INACTIVITY_TIME_MS  5000    /* ms of no motion → ignore (unused)    */
+#define MOTION_DIFF_MG      80.0f   /* mg change between samples = motion   */
+
+/// ─────────────────────────────────────────────────────────────────────────────
+///  Signal conditioning
+/// ─────────────────────────────────────────────────────────────────────────────
+#define SIGNAL_GAIN 1.0f  /* gain applied to raw ADC data before features   */
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Phase durations — comment/uncomment the pair you want
+//  Training phase durations
+//
+//  The default training is split in two equal halves:
+//    Phase 1 – EXPLORING: builds the novelty buffer and seeds k++ centroids.
+//    Phase 2 – TRAINING:  refines centroids and computes distance thresholds.
+//
+//  TRAINING_DEFAULT_DURATION_MS is the *total* duration used when the hub
+//  does not specify a custom duration (ml_duration_ms == 0).
+//  EXPLORING_DURATION_MS / TRAINING_DURATION_MS each account for half of that.
+//
+//  These values are also used as defaults inside run_training_phase() when
+//  the hub sends ml_duration_ms = 0.
+//
+//  Uncomment the set matching your use case:
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Production: 24h exploring + 24h training
-// #define EXPLORING_DURATION_MS  (24UL * 3600UL * 1000UL)
-// #define TRAINING_DURATION_MS   (24UL * 3600UL * 1000UL)
+// Production: 24 h exploring + 24 h training (total 48 h)
+// #define TRAINING_DEFAULT_DURATION_MS  (48UL * 3600UL * 1000UL)
+// #define EXPLORING_DURATION_MS         (24UL * 3600UL * 1000UL)
+// #define TRAINING_DURATION_MS          (24UL * 3600UL * 1000UL)
 
-// Test: 15 min exploring + 15 min training
-// #define EXPLORING_DURATION_MS  (15UL * 60UL * 1000UL)
-// #define TRAINING_DURATION_MS   (15UL * 60UL * 1000UL)
+// Test: 30 min total (15 min each)
+// #define TRAINING_DEFAULT_DURATION_MS  (30UL * 60UL * 1000UL)
+// #define EXPLORING_DURATION_MS         (15UL * 60UL * 1000UL)
+// #define TRAINING_DURATION_MS          (15UL * 60UL * 1000UL)
 
-// Quick bench: 2 min exploring + 2 min training
-#define EXPLORING_DURATION_MS    ( 2UL * 60UL * 1000UL)
-#define TRAINING_DURATION_MS     ( 2UL * 60UL * 1000UL)
+// Quick bench: 4 min total (2 min each)
+#define TRAINING_DEFAULT_DURATION_MS  (4UL  * 60UL * 1000UL)
+#define EXPLORING_DURATION_MS         (2UL  * 60UL * 1000UL)
+#define TRAINING_DURATION_MS          (2UL  * 60UL * 1000UL)
 
 #endif // CONFIG_H

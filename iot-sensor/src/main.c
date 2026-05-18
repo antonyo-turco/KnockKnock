@@ -23,7 +23,7 @@
 #include "secure_store.h"
 #include "esp_now_comm.h"
 
-static const char *TAG = "MAIN";
+static const char *TAG_MAIN = "MAIN";
 
 
 
@@ -35,8 +35,8 @@ static const char *TAG = "MAIN";
  * ========================================================= */
 static void enter_deep_sleep(void)
 {
-    ESP_LOGI(TAG, "Going to deep sleep... waiting for ADXL362 INT1 to wake up.");
-    ESP_LOGI(TAG, "-----------------------------------------------------------");
+    ESP_LOGI(TAG_MAIN, "Going to deep sleep... waiting for ADXL362 INT1 to wake up.");
+    ESP_LOGI(TAG_MAIN, "-----------------------------------------------------------");
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << MY_PIN_INT1),
@@ -50,16 +50,16 @@ static void enter_deep_sleep(void)
     int wait_ms = 0;
     while (gpio_get_level(MY_PIN_INT1) == 1 && wait_ms < 3000) {
         if (wait_ms == 0) {
-            ESP_LOGW(TAG, "INT1 is HIGH - waiting for it to go LOW before sleeping...");
+            ESP_LOGW(TAG_MAIN, "INT1 is HIGH - waiting for it to go LOW before sleeping...");
         }
         vTaskDelay(pdMS_TO_TICKS(20));
         wait_ms += 20;
     }
 
     if (gpio_get_level(MY_PIN_INT1) == 1) {
-        ESP_LOGE(TAG, "INT1 stuck HIGH after 3s - sleeping anyway (may wake immediately)");
+        ESP_LOGE(TAG_MAIN, "INT1 stuck HIGH after 3s - sleeping anyway (may wake immediately)");
     } else {
-        ESP_LOGI(TAG, "INT1 is LOW - safe to sleep.");
+        ESP_LOGI(TAG_MAIN, "INT1 is LOW - safe to sleep.");
     }
 
     rtc_gpio_init(MY_PIN_INT1);
@@ -90,7 +90,7 @@ void app_main(void)
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
 
     if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
-        ESP_LOGI(TAG, "=== Woken up by ADXL362 (motion detected!) ===");
+        ESP_LOGI(TAG_MAIN, "=== Woken up by ADXL362 (motion detected!) ===");
         
         ESP_ERROR_CHECK(secure_store_init());
         ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -101,22 +101,22 @@ void app_main(void)
         const char *msg = "KNOCK_DETECTED";
         esp_err_t res = esp_now_comm_send((const uint8_t*)msg, strlen(msg));
         if (res == ESP_OK) {
-            ESP_LOGI(TAG, "Alert sent successfully to gateway via ESP-NOW");
+            ESP_LOGI(TAG_MAIN, "Alert sent successfully to gateway via ESP-NOW");
         } else {
-            ESP_LOGE(TAG, "Failed to send alert via ESP-NOW");
+            ESP_LOGE(TAG_MAIN, "Failed to send alert via ESP-NOW");
         }
         
     } else {
-        ESP_LOGI(TAG, "=== First boot / manual reset ===");
-        ESP_LOGI(TAG, "No active session on first boot - configuring and sleeping.");
+        ESP_LOGI(TAG_MAIN, "=== First boot / manual reset ===");
+        ESP_LOGI(TAG_MAIN, "No active session on first boot - configuring and sleeping.");
 
         adxl362_handle_t s = sensor_init();
         if (!s) {
             while (true) {
-                ESP_LOGE(TAG, "ADXL362 not found! Check wiring:");
-                ESP_LOGE(TAG, "  MOSI -> GPIO 23  |  MISO -> GPIO 19");
-                ESP_LOGE(TAG, "  SCLK -> GPIO 18  |  CS   -> GPIO 5");
-                ESP_LOGE(TAG, "  VDD  -> 3.3V      |  GND  -> GND");
+                ESP_LOGE(TAG_MAIN, "ADXL362 not found! Check wiring:");
+                ESP_LOGE(TAG_MAIN, "  MOSI -> GPIO 23  |  MISO -> GPIO 19");
+                ESP_LOGE(TAG_MAIN, "  SCLK -> GPIO 18  |  CS   -> GPIO 5");
+                ESP_LOGE(TAG_MAIN, "  VDD  -> 3.3V      |  GND  -> GND");
                 vTaskDelay(pdMS_TO_TICKS(5000));
             }
         }
@@ -126,15 +126,15 @@ void app_main(void)
 
     adxl362_handle_t sensor = sensor_init();
     if (!sensor) {
-        ESP_LOGE(TAG, "Could not init sensor after wake, restarting...");
+        ESP_LOGE(TAG_MAIN, "Could not init sensor after wake, restarting...");
         vTaskDelay(pdMS_TO_TICKS(1000));
         esp_restart();
         return;
     }
 
-    ESP_LOGI(TAG, "Printing acceleration data. Will sleep after %d seconds of no motion.",
+    ESP_LOGI(TAG_MAIN, "Printing acceleration data. Will sleep after %d seconds of no motion.",
              INACTIVITY_TIME_MS / 1000);
-    ESP_LOGI(TAG, "-----------------------------------------------------------");
+    ESP_LOGI(TAG_MAIN, "-----------------------------------------------------------");
 
     adxl362_data_mg_t prev = {0};
     bool first_sample = true;
@@ -146,7 +146,7 @@ void app_main(void)
     while (true) {
         adxl362_data_mg_t cur;
         if (adxl362_read_mg(sensor, &cur) == ESP_OK) {
-            ESP_LOGI(TAG, "X: %7.1f mg  |  Y: %7.1f mg  |  Z: %7.1f mg",
+            ESP_LOGI(TAG_MAIN, "X: %7.1f mg  |  Y: %7.1f mg  |  Z: %7.1f mg",
                      cur.x_mg, cur.y_mg, cur.z_mg);
 
             if (!first_sample) {
@@ -170,7 +170,7 @@ void app_main(void)
         if (grace_done) {
             TickType_t idle_ms = (xTaskGetTickCount() - last_motion_tick) * portTICK_PERIOD_MS;
             if (idle_ms >= INACTIVITY_TIME_MS) {
-                ESP_LOGI(TAG, "No motion for %d seconds - going to sleep.",
+                ESP_LOGI(TAG_MAIN, "No motion for %d seconds - going to sleep.",
                          INACTIVITY_TIME_MS / 1000);
                 enter_deep_sleep();
                 return;

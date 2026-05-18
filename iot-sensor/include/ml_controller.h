@@ -2,7 +2,7 @@
 #include "tinyml_baseline_model.h"
 #include "tinyml_training.h"
 #include "feature_extraction.h" 
-
+#include "esp_timer.h"
 
 
 
@@ -41,11 +41,11 @@ static void transition_to_training() {
         printf("[SYSTEM] WARNING: novelty buffer sparse — model may need longer exploring.");
     }
 
-    g_phase_start_ms = millis();
+    g_phase_start_ms =  esp_timer_get_time();
     g_mode = SystemMode::TRAINING;
     printf("[SYSTEM] EXPLORING complete -> TRAINING for %lu s.\n",
            (unsigned long)TRAINING_DURATION_MS / 1000UL);
-    delay(1500);
+    vTaskDelay(1500);
 }
 
 static void transition_to_inference() {
@@ -55,7 +55,7 @@ static void transition_to_inference() {
     training_save(g_model);
 
     g_mode = SystemMode::INFERENCE;
-    Serial.println("[SYSTEM] TRAINING complete -> INFERENCE mode.");
+    printf("[SYSTEM] TRAINING complete -> INFERENCE mode.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,12 +82,12 @@ static void process_window() {
 
 
             if (g_window_seq % 150 == 0)
-                Serial.printf("[EXPLORE] win=%lu  n=%lu  novel=%u%%\n",
+                printf("[EXPLORE] win=%lu  n=%lu  novel=%u%%\n",
                               (unsigned long)g_window_seq,
                               (unsigned long)g_model.total_samples,
                               exploring_novelty_pct());
 
-            if (millis() - g_phase_start_ms >= EXPLORING_DURATION_MS)
+            if ( esp_timer_get_time() - g_phase_start_ms >= EXPLORING_DURATION_MS)
                 transition_to_training();
             break;
 
@@ -97,14 +97,14 @@ static void process_window() {
 
 
             if (g_window_seq % 150 == 0) {
-                uint32_t elapsed = millis() - g_phase_start_ms;
-                Serial.printf("[TRAIN] win=%lu  n=%lu  %lu%%\n",
+                uint32_t elapsed =  esp_timer_get_time() - g_phase_start_ms;
+                printf("[TRAIN] win=%lu  n=%lu  %lu%%\n",
                               (unsigned long)g_window_seq,
                               (unsigned long)g_model.total_samples,
                               elapsed * 100 / TRAINING_DURATION_MS);
             }
 
-            if (millis() - g_phase_start_ms >= TRAINING_DURATION_MS)
+            if ( esp_timer_get_time() - g_phase_start_ms >= TRAINING_DURATION_MS)
                 transition_to_inference();
             break;
 
@@ -114,14 +114,14 @@ static void process_window() {
             int   cluster = -1;
             bool  ok      = training_is_baseline(g_model, feat, &dist, &cluster);
 
-            Serial.printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  C%d  %s\n",
+            printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  C%d  %s\n",
                         (unsigned long)g_window_seq,
                         feat.impact_score, feat.m_p99, dist,
                         cluster,
                         ok ? "BASELINE" : "*** DEVIATION ***");
 
 
-            Serial.printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  %s\n",
+            printf("[INF] win=%lu  impact=%.4f  m_p99=%.2f  dist=%.4f  %s\n",
                           (unsigned long)g_window_seq,
                           feat.impact_score, feat.m_p99, dist,
                           ok ? "BASELINE" : "*** DEVIATION ***");

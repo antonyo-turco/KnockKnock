@@ -1,7 +1,7 @@
 #ifndef TINYML_TRAINING_H
 #define TINYML_TRAINING_H
 
-#include <Arduino.h>
+
 #include "config.h"
 #include "feature_extraction.h"
 

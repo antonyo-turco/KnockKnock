@@ -21,7 +21,7 @@
 #include "ADXL362_utils.h"
 
 #include "secure_store.h"
-#include "esp_now_comm.h"
+#include "hub_communication.h"
 
 static const char *TAG_MAIN = "MAIN";
 
@@ -92,20 +92,24 @@ void app_main(void)
     if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
         ESP_LOGI(TAG_MAIN, "=== Woken up by ADXL362 (motion detected!) ===");
         
-        ESP_ERROR_CHECK(secure_store_init());
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        ESP_ERROR_CHECK(hub_comm_init());
         
-        uint8_t gw_mac[6] = {0x24, 0x6F, 0x28, 0xAE, 0x52, 0x10};
-        ESP_ERROR_CHECK(esp_now_comm_init(gw_mac, 1));
-        
-        const char *msg = "KNOCK_DETECTED";
-        esp_err_t res = esp_now_comm_send((const uint8_t*)msg, strlen(msg));
-        if (res == ESP_OK) {
-            ESP_LOGI(TAG_MAIN, "Alert sent successfully to gateway via ESP-NOW");
-        } else {
-            ESP_LOGE(TAG_MAIN, "Failed to send alert via ESP-NOW");
+        if (!hub_comm_is_paired()) {
+            ESP_LOGI(TAG_MAIN, "Not paired. Waiting for pairing from Hub (10 seconds)...");
+            hub_comm_pair(10000);
         }
-        
+
+        if (hub_comm_is_paired()) {
+            ESP_LOGI(TAG_MAIN, "Sending knock alarm...");
+            bool success = hub_comm_send_alarm(1, 3); // Alarm code 1, up to 3 retries
+            if (success) {
+                ESP_LOGI(TAG_MAIN, "Knock alert sent successfully to Hub");
+            } else {
+                ESP_LOGE(TAG_MAIN, "Failed to send knock alert to Hub");
+            }
+        } else {
+            ESP_LOGE(TAG_MAIN, "Device is not paired. Cannot send alarm.");
+        }
     } else {
         ESP_LOGI(TAG_MAIN, "=== First boot / manual reset ===");
         ESP_LOGI(TAG_MAIN, "No active session on first boot - configuring and sleeping.");

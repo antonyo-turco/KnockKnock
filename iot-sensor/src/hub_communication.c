@@ -6,6 +6,7 @@
 #include "freertos/event_groups.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "secure_store.h"
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -19,6 +20,9 @@ static const char *TAG_HUB_COMM = "HUB_COMM";
 // Variabili di stato interne
 static uint8_t s_hub_mac[ESP_NOW_ETH_ALEN] = {0};
 static bool s_is_paired = false;
+
+static uint8_t s_esp_now_pmk[16];
+static uint8_t s_esp_now_lmk[16];
 
 // FreeRTOS Event Group per sincronizzare le callback asincrone col task
 // principale
@@ -75,7 +79,7 @@ static void add_hub_peer(const uint8_t *mac) {
   peer_info.ifidx = WIFI_IF_STA;
   peer_info.encrypt = true;
   memcpy(peer_info.peer_addr, mac, ESP_NOW_ETH_ALEN);
-  memcpy(peer_info.lmk, ESP_NOW_LMK, 16);
+  memcpy(peer_info.lmk, s_esp_now_lmk, 16);
 
   if (!esp_now_is_peer_exist(mac)) {
     esp_now_add_peer(&peer_info);
@@ -87,14 +91,29 @@ static void add_hub_peer(const uint8_t *mac) {
 esp_err_t hub_comm_init(void) {
   s_espnow_event_group = xEventGroupCreate();
 
-  // 1. Inizializza NVS
-  esp_err_t err = nvs_flash_init();
-  if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
-      err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    err = nvs_flash_init();
-  }
+  // 1. Inizializza NVS in modo sicuro
+  esp_err_t err = secure_store_init();
   ESP_ERROR_CHECK(err);
+
+  // Carica le chiavi PMK e LMK dall'NVS sicuro, o usa i default
+  char *pmk_str = NULL;
+  char *lmk_str = NULL;
+  
+  if (secure_store_read_string("esp_now_pmk", &pmk_str) == ESP_OK) {
+      memcpy(s_esp_now_pmk, pmk_str, 16);
+      free(pmk_str);
+  } else {
+      memcpy(s_esp_now_pmk, DEFAULT_ESP_NOW_PMK, 16);
+      secure_store_write_string("esp_now_pmk", DEFAULT_ESP_NOW_PMK);
+  }
+
+  if (secure_store_read_string("esp_now_lmk", &lmk_str) == ESP_OK) {
+      memcpy(s_esp_now_lmk, lmk_str, 16);
+      free(lmk_str);
+  } else {
+      memcpy(s_esp_now_lmk, DEFAULT_ESP_NOW_LMK, 16);
+      secure_store_write_string("esp_now_lmk", DEFAULT_ESP_NOW_LMK);
+  }
 
   // 2. Inizializza Wi-Fi in modalità Station
   ESP_ERROR_CHECK(esp_netif_init());
@@ -113,24 +132,22 @@ esp_err_t hub_comm_init(void) {
   ESP_ERROR_CHECK(esp_now_register_send_cb((esp_now_send_cb_t)on_data_sent));
   ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
 
-  // Imposta la Primary Master Key (PMK)
-  ESP_ERROR_CHECK(esp_now_set_pmk((uint8_t *)ESP_NOW_PMK));
+  // Imposta la Primary Master Key (PMK) caricata dall'NVS
+  ESP_ERROR_CHECK(esp_now_set_pmk(s_esp_now_pmk));
 
   // 4. Carica il MAC da NVS
-  nvs_handle_t nvs_handle;
-  err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
-  if (err == ESP_OK) {
-    size_t required_size = ESP_NOW_ETH_ALEN;
-    err = nvs_get_blob(nvs_handle, NVS_KEY_HUB_MAC, s_hub_mac, &required_size);
-    if (err == ESP_OK && required_size == ESP_NOW_ETH_ALEN) {
-      s_is_paired = true;
-      add_hub_peer(s_hub_mac);
-      ESP_LOGI(TAG_HUB_COMM, "Hub MAC caricato: %02X:%02X:%02X:%02X:%02X:%02X",
-               s_hub_mac[0], s_hub_mac[1], s_hub_mac[2], s_hub_mac[3],
-               s_hub_mac[4], s_hub_mac[5]);
-    }
-    nvs_close(nvs_handle);
+  uint8_t *mac_data = NULL;
+  size_t mac_len = 0;
+  err = secure_store_read(NVS_KEY_HUB_MAC, &mac_data, &mac_len);
+  if (err == ESP_OK && mac_len == ESP_NOW_ETH_ALEN) {
+    memcpy(s_hub_mac, mac_data, ESP_NOW_ETH_ALEN);
+    s_is_paired = true;
+    add_hub_peer(s_hub_mac);
+    ESP_LOGI(TAG_HUB_COMM, "Hub MAC caricato in modo sicuro: %02X:%02X:%02X:%02X:%02X:%02X",
+             s_hub_mac[0], s_hub_mac[1], s_hub_mac[2], s_hub_mac[3],
+             s_hub_mac[4], s_hub_mac[5]);
   }
+  if (mac_data) free(mac_data);
 
   return ESP_OK;
 }
@@ -147,15 +164,9 @@ bool hub_comm_pair(uint32_t timeout_ms) {
                           pdFALSE, pdMS_TO_TICKS(timeout_ms));
 
   if (bits & EVENT_RECV_PAIR) {
-    // Salviamo il MAC nell'NVS
+    // Salviamo il MAC in modo sicuro
     memcpy(s_hub_mac, s_last_recv_mac, ESP_NOW_ETH_ALEN);
-
-    nvs_handle_t nvs_handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) == ESP_OK) {
-      nvs_set_blob(nvs_handle, NVS_KEY_HUB_MAC, s_hub_mac, ESP_NOW_ETH_ALEN);
-      nvs_commit(nvs_handle);
-      nvs_close(nvs_handle);
-    }
+    secure_store_write(NVS_KEY_HUB_MAC, s_hub_mac, ESP_NOW_ETH_ALEN);
 
     s_is_paired = true;
     add_hub_peer(s_hub_mac); // Aggiunge come peer cifrato

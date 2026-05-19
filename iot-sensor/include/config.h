@@ -1,6 +1,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "hal/spi_types.h"
+#include "hal/gpio_types.h"
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Sampling & FFT
 //  SAMPLE_COUNT == FFT_SIZE: no zero-padding, no data discarded.
@@ -108,5 +111,29 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 #define TRAINING_DEFAULT_DURATION_MS  (4UL  * 60UL * 1000UL)
 #define EXPLORING_DURATION_MS         (2UL  * 60UL * 1000UL)
 #define TRAINING_DURATION_MS          (2UL  * 60UL * 1000UL)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Hardware Pin Definitions
+//
+//  Wiring for ESP32-C3 Super Mini to ADXL362:
+//  ┌──────────────┬───────────────────┐
+//  │ ADXL362      │ ESP32-C3 Super Mini │
+//  ├──────────────┼───────────────────┤
+//  │ VCC / VDD    │ 3.3V              │
+//  │ GND          │ GND               │
+//  │ MOSI / SDA   │ GPIO 7            │
+//  │ MISO / SDO   │ GPIO 2            │
+//  │ SCLK / SCL   │ GPIO 6            │
+//  │ CS           │ GPIO 10           │
+//  │ INT1         │ GPIO 3            │
+//  └──────────────┴───────────────────┘
+// ─────────────────────────────────────────────────────────────────────────────
+#define MY_SPI_HOST SPI2_HOST
+#define MY_PIN_MOSI GPIO_NUM_7
+#define MY_PIN_MISO GPIO_NUM_2
+#define MY_PIN_SCLK GPIO_NUM_6
+#define MY_PIN_CS GPIO_NUM_10
+#define MY_PIN_INT1 GPIO_NUM_3 /* must be a valid GPIO for deep sleep wakeup */
+#define MY_SPI_CLOCK 1000000 /* 1 MHz - reduced for debugging on breadboard */
 
 #endif // CONFIG_H

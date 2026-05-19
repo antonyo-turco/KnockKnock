@@ -6,8 +6,7 @@
 
 /* MQTT API Configuration (Cloud) */
 #define CLOUD_MQTT_URI "mqtt://test.mosquitto.org:1883"
-#define CLOUD_MQTT_USERNAME "testuser"
-#define CLOUD_MQTT_PASSWORD "testpass"
+#include "secrets.h"
 
 /* UART Configuration for Serial Bridge (Hub <-> Gateway) */
 #define HUB_UART_PORT   1

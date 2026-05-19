@@ -9,9 +9,7 @@
 extern "C" {
 #endif
 
-// Configurazioni di sicurezza (Modifica con chiavi a 16 byte reali)
-#define DEFAULT_ESP_NOW_PMK "pmk1234567890123"
-#define DEFAULT_ESP_NOW_LMK "lmk1234567890123"
+#include "secrets.h"
 #define WIFI_CHANNEL 1
 
 // Tipi di messaggi per multiplexing

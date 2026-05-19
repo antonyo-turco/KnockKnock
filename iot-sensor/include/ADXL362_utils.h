@@ -2,16 +2,7 @@
 #include "config.h"
 #include "freertos/FreeRTOS.h"
 
-/* =========================================================
- *  Pin definitions - change these to match your wiring
- * ========================================================= */
-#define MY_SPI_HOST SPI3_HOST
-#define MY_PIN_MOSI GPIO_NUM_23
-#define MY_PIN_MISO GPIO_NUM_19
-#define MY_PIN_SCLK GPIO_NUM_18
-#define MY_PIN_CS GPIO_NUM_5
-#define MY_PIN_INT1 GPIO_NUM_33 /* must be an RTC GPIO for ext0 wakeup */
-#define MY_SPI_CLOCK 1000000 /* 1 MHz - reduced for debugging on breadboard */
+
 
 static const char *TAG1 = "ADXL362_UTILS";
 

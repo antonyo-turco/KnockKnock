@@ -12,7 +12,7 @@
  *  │   5. training_save() → NVS                                   │
  *  │   6. goto_deep_sleep()                                       │
  *  ├──────────────────────────────────────────────────────────────┤
- *  │  SENSOR WAKEUP (EXT0 – ADXL362 activity interrupt)          │
+ *  │  SENSOR WAKEUP (GPIO – ADXL362 activity interrupt)          │
  *  │   1. Start sensor_sampler_task  (core 0, high priority)      │
  *  │   2. Start ml_processor_task   (core 1, waits on semaphore)  │
  *  │   3. ML inference:                                           │
@@ -35,7 +35,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-#include "driver/rtc_io.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -59,7 +59,7 @@ static const char *TAG = "MAIN";
 /** Current ADXL362 activity threshold (mg). Adaptively tuned at runtime. */
 RTC_DATA_ATTR static uint16_t rtc_threshold_mg = THRESHOLD_MG;
 
-/** Timestamp (seconds since epoch) of the last EXT0 wakeup. */
+/** Timestamp (seconds since epoch) of the last GPIO wakeup. */
 RTC_DATA_ATTR static int64_t rtc_last_sensor_wakeup_sec = 0;
 
 /** True once hub MAC has been saved to NVS and pairing is confirmed. */
@@ -108,7 +108,7 @@ static void handle_hub_reset(void) {
 
 /**
  * @brief Configure the ADXL362 with the current adaptive threshold and enter
- *        deep sleep.  Both EXT0 (sensor interrupt) and timer (24-h sync) are
+ *        deep sleep.  Both GPIO (sensor interrupt) and timer (24-h sync) are
  *        armed as wakeup sources.
  */
 static void goto_deep_sleep(void) {
@@ -123,8 +123,8 @@ static void goto_deep_sleep(void) {
     adxl362_start_measurement(g_sensor);
   }
 
-  // EXT0: ADXL362 INT1 line goes high on activity
-  esp_sleep_enable_ext0_wakeup(MY_PIN_INT1, 1);
+  // GPIO: ADXL362 INT1 line goes high on activity
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << MY_PIN_INT1, ESP_GPIO_WAKEUP_GPIO_HIGH);
 
   // Timer: periodic 24-h hub sync
   esp_sleep_enable_timer_wakeup((uint64_t)SYNC_INTERVAL_SEC * 1000000ULL);
@@ -465,7 +465,7 @@ void app_main(void) {
   // ═════════════════════════════════════════════════════════════════════════
   //  PATH A — First boot / manual reset
   // ═════════════════════════════════════════════════════════════════════════
-  if (wakeup != ESP_SLEEP_WAKEUP_EXT0 && wakeup != ESP_SLEEP_WAKEUP_TIMER) {
+  if (wakeup != ESP_SLEEP_WAKEUP_GPIO && wakeup != ESP_SLEEP_WAKEUP_TIMER) {
     ESP_LOGI(TAG, "=== FIRST BOOT / RESET ===");
 
     // ── Step 1: Init hub comms ────────────────────────────────────────────
@@ -527,7 +527,7 @@ void app_main(void) {
   // ═════════════════════════════════════════════════════════════════════════
   //  PATH B — Sensor wakeup (ADXL362 activity interrupt)
   // ═════════════════════════════════════════════════════════════════════════
-  else if (wakeup == ESP_SLEEP_WAKEUP_EXT0) {
+  else if (wakeup == ESP_SLEEP_WAKEUP_GPIO) {
     ESP_LOGI(TAG, "=== SENSOR WAKEUP (knock detected) ===");
 
     // If the device was never trained, fall back to first-boot path
@@ -562,13 +562,11 @@ void app_main(void) {
       esp_restart();
     }
 
-    // Sampler on Core 0 (high priority to keep sample timing precise)
-    xTaskCreatePinnedToCore(sensor_sampler_task, "sampler", 4096, NULL, 5, NULL,
-                            0);
+    // Sampler (high priority to keep sample timing precise)
+    xTaskCreate(sensor_sampler_task, "sampler", 4096, NULL, 5, NULL);
 
-    // ML processor on Core 1 (waits on semaphore, heavy computation)
-    xTaskCreatePinnedToCore(ml_processor_task, "ml_proc", 8192, NULL, 4, NULL,
-                            1);
+    // ML processor (waits on semaphore, heavy computation)
+    xTaskCreate(ml_processor_task, "ml_proc", 8192, NULL, 4, NULL);
 
     // app_main must not return — suspend it while the tasks run
     vTaskSuspend(NULL);

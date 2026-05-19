@@ -1,0 +1,60 @@
+# ==============================================================================
+# KnockKnock Gateway – sdkconfig.defaults
+# ==============================================================================
+# Development-safe defaults: NO eFuse burns, NO flash encryption.
+# Flash encryption and secure boot should be enabled only on production
+# hardware, AFTER development is complete (see production notes below).
+
+# ------------------------------------------------------------------------------
+# Flash Encryption – DISABLED for development
+# To enable for production, uncomment the two lines below and ensure you
+# have a signed key.  This is a ONE-WAY eFuse burn.
+# ------------------------------------------------------------------------------
+# CONFIG_FLASH_ENCRYPTION_ENABLED=y
+# CONFIG_FLASH_ENCRYPTION_MODE_RELEASE=y
+
+# ------------------------------------------------------------------------------
+# NVS Encryption – DISABLED for development
+# Requires flash encryption to be active on the device.
+# Uncomment for production after enabling flash encryption above.
+# ------------------------------------------------------------------------------
+# CONFIG_NVS_ENCRYPTION=y
+
+# ------------------------------------------------------------------------------
+# Secure Boot – DISABLED for development
+# ------------------------------------------------------------------------------
+# CONFIG_SECURE_BOOT=y
+# CONFIG_SECURE_BOOT_V2_ENABLED=y
+
+# ------------------------------------------------------------------------------
+# mbedTLS – Hardware AES/SHA accelerators (ESP32-C3)
+# These do NOT burn any eFuses and are safe to enable in development.
+# The ESP32-C3 hardware AES-GCM engine is used transparently by mbedTLS.
+# ------------------------------------------------------------------------------
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_GCM=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+
+# Disable weak cipher suites for a lean and secure mbedTLS build.
+CONFIG_MBEDTLS_RC4_DISABLED=y
+CONFIG_MBEDTLS_3DES_DISABLED=y
+
+# ------------------------------------------------------------------------------
+# ESP-NOW
+# ------------------------------------------------------------------------------
+CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM=4
+
+# ------------------------------------------------------------------------------
+# FreeRTOS
+# ------------------------------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ------------------------------------------------------------------------------
+# Stack sizes
+# ------------------------------------------------------------------------------
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

@@ -1,0 +1,12 @@
+# Partition table for the KnockKnock gateway.
+#
+# Development layout: no encrypted flags.
+# For production (with flash encryption active), add the 'encrypted' flag
+# back to the nvs_keys partition.
+#
+# Name,    Type,  SubType,   Offset,   Size
+nvs,       data,  nvs,       0x9000,   0x6000
+nvs_keys,  data,  nvs_keys,  0xf000,   0x1000
+phy_init,  data,  phy,       0x10000,  0x1000
+app0,      app,   factory,   0x20000,  0x180000
+coredump,  data,  coredump,  0x1A0000, 0x10000

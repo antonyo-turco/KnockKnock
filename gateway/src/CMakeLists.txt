@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "gateway.c"
+    REQUIRES
+        secure_store
+        espnow_manager
+        serial_bridge
+        esp_timer
+        esp_wifi
+)

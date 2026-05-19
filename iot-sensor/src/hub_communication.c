@@ -155,13 +155,26 @@ esp_err_t hub_comm_init(void) {
 bool hub_comm_is_paired(void) { return s_is_paired; }
 
 bool hub_comm_pair(uint32_t timeout_ms) {
-  ESP_LOGI(TAG_HUB_COMM, "In attesa di pairing dall'Hub...");
-  xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
+  ESP_LOGI(TAG_HUB_COMM, "Inviando richiesta di pairing (broadcast)...");
+  
+  uint8_t bcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  esp_now_peer_info_t peer_info = {};
+  peer_info.channel = WIFI_CHANNEL;
+  peer_info.ifidx = WIFI_IF_STA;
+  peer_info.encrypt = false;
+  memcpy(peer_info.peer_addr, bcast_mac, ESP_NOW_ETH_ALEN);
+  esp_now_add_peer(&peer_info);
 
-  // Aspetta finché non riceve un pacchetto MSG_TYPE_PAIR o va in timeout
+  esp_now_packet_t req_packet = {.type = MSG_TYPE_PAIR};
+  xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
+  esp_now_send(bcast_mac, (uint8_t *)&req_packet, sizeof(req_packet.type));
+
+  // Aspetta finché non riceve un pacchetto MSG_TYPE_PAIR (dal Gateway) o va in timeout
   EventBits_t bits =
       xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_PAIR, pdTRUE,
                           pdFALSE, pdMS_TO_TICKS(timeout_ms));
+                          
+  esp_now_del_peer(bcast_mac);
 
   if (bits & EVENT_RECV_PAIR) {
     // Salviamo il MAC in modo sicuro

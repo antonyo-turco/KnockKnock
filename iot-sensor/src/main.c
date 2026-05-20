@@ -263,7 +263,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Sensor sampler task  (Core 0 — tight real-time loop)
+//  Sensor sampler task
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -296,7 +296,7 @@ static void sensor_sampler_task(void *arg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ML processor task  (Core 1 — waits for sampler, then runs inference)
+//  ML processor task
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**

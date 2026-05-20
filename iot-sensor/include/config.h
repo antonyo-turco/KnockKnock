@@ -1,8 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#include "hal/spi_types.h"
 #include "hal/gpio_types.h"
+#include "hal/spi_types.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Sampling & FFT
@@ -48,9 +48,9 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG     150   /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN  50   /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 250   /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 100     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 50  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 150 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Adaptive threshold tuning
@@ -58,27 +58,27 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  (= too often) → raise threshold by THRESHOLD_STEP_UP.
 ///  Otherwise → lower it by THRESHOLD_STEP_DOWN (back to baseline sensitivity).
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_ADJUST_TIME_SEC 30  /* window for "waking too often" check */
-#define THRESHOLD_STEP_UP         10  /* mg to raise when too frequent       */
-#define THRESHOLD_STEP_DOWN        5  /* mg to lower when timing is normal   */
+#define THRESHOLD_ADJUST_TIME_SEC 30 /* window for "waking too often" check */
+#define THRESHOLD_STEP_UP 10         /* mg to raise when too frequent       */
+#define THRESHOLD_STEP_DOWN 5        /* mg to lower when timing is normal   */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Deep-sleep wakeup sources
 ///  SYNC_INTERVAL_SEC: periodic timer wakeup for 24-h hub sync
 /// ─────────────────────────────────────────────────────────────────────────────
-#define SYNC_INTERVAL_SEC (24UL * 3600UL)   /* 24 hours in seconds          */
+#define SYNC_INTERVAL_SEC (24UL * 3600UL) /* 24 hours in seconds          */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  ADXL362 activity/inactivity detector settings
 /// ─────────────────────────────────────────────────────────────────────────────
-#define ACTIVITY_TIME_MS    1       /* 1 sample @ 100 Hz = 10 ms            */
-#define INACTIVITY_TIME_MS  5000    /* ms of no motion → ignore (unused)    */
-#define MOTION_DIFF_MG      80.0f   /* mg change between samples = motion   */
+#define ACTIVITY_TIME_MS 1      /* 1 sample @ 100 Hz = 10 ms            */
+#define INACTIVITY_TIME_MS 5000 /* ms of no motion → ignore (unused)    */
+#define MOTION_DIFF_MG 80.0f    /* mg change between samples = motion   */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Signal conditioning
 /// ─────────────────────────────────────────────────────────────────────────────
-#define SIGNAL_GAIN 1.0f  /* gain applied to raw ADC data before features   */
+#define SIGNAL_GAIN 1.0f /* gain applied to raw ADC data before features   */
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Training phase durations
@@ -108,9 +108,9 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 // #define TRAINING_DURATION_MS          (15UL * 60UL * 1000UL)
 
 // Quick bench: 4 min total (2 min each)
-#define TRAINING_DEFAULT_DURATION_MS  (4UL  * 60UL * 1000UL)
-#define EXPLORING_DURATION_MS         (2UL  * 60UL * 1000UL)
-#define TRAINING_DURATION_MS          (2UL  * 60UL * 1000UL)
+#define TRAINING_DEFAULT_DURATION_MS (4UL * 60UL * 1000UL)
+#define EXPLORING_DURATION_MS (2UL * 60UL * 1000UL)
+#define TRAINING_DURATION_MS (2UL * 60UL * 1000UL)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware Pin Definitions
@@ -133,7 +133,8 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 #define MY_PIN_MISO GPIO_NUM_2
 #define MY_PIN_SCLK GPIO_NUM_6
 #define MY_PIN_CS GPIO_NUM_10
-#define MY_PIN_INT1 GPIO_NUM_3 /* must be a valid GPIO for deep sleep wakeup */
-#define MY_SPI_CLOCK 1000000 /* 1 MHz - reduced for debugging on breadboard */
+#define MY_PIN_INT1 GPIO_NUM_3 /* must be a valid GPIO for deep sleep wakeup   \
+                                */
+#define MY_SPI_CLOCK 1000000   /* 1 MHz - reduced for debugging on breadboard */
 
 #endif // CONFIG_H

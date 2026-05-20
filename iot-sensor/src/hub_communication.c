@@ -51,14 +51,14 @@ static void on_data_sent(const uint8_t *mac_addr,
 static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
                          const uint8_t *data, int len) {
   if (len < sizeof(uint8_t))
-    return; // Pacchetto troppo piccolo
+    return; // Packet too small
 
-  // Recupera il MAC address dalla nuova struct
+  // Get the MAC address from the new struct
   const uint8_t *mac_addr = esp_now_info->src_addr;
 
   esp_now_packet_t *packet = (esp_now_packet_t *)data;
 
-  // Salva il MAC del mittente
+  // Save the MAC address of the sender
   memcpy(s_last_recv_mac, mac_addr, ESP_NOW_ETH_ALEN);
 
   if (packet->type == MSG_TYPE_PAIR) {
@@ -70,7 +70,7 @@ static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
   }
 }
 
-// --- FUNZIONI DI UTILITA' INTERNE ---
+// --- INTERNAL HELPER FUNCTIONS ---
 
 static void add_hub_peer(const uint8_t *mac) {
   esp_now_peer_info_t peer_info = {};
@@ -85,12 +85,12 @@ static void add_hub_peer(const uint8_t *mac) {
   }
 }
 
-// --- IMPLEMENTAZIONE API PUBBLICHE ---
+// --- PUBLIC API IMPLEMENTATION ---
 
 esp_err_t hub_comm_init(void) {
   s_espnow_event_group = xEventGroupCreate();
 
-  // 1. Inizializza NVS in modo sicuro
+  // 1. Initialize NVS in a secure way
   esp_err_t err = secure_store_init();
   ESP_ERROR_CHECK(err);
 
@@ -114,7 +114,7 @@ esp_err_t hub_comm_init(void) {
     secure_store_write_string("esp_now_lmk", DEFAULT_ESP_NOW_LMK);
   }
 
-  // 2. Inizializza Wi-Fi in modalità Station
+  // 2. Initialize Wi-Fi in Station mode
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -123,18 +123,18 @@ esp_err_t hub_comm_init(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  // Imposta il canale Wi-Fi (fondamentale per ESP-NOW)
+  // Set the Wi-Fi channel (essential for ESP-NOW)
   ESP_ERROR_CHECK(esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE));
 
-  // 3. Inizializza ESP-NOW
+  // 3. Initialize ESP-NOW
   ESP_ERROR_CHECK(esp_now_init());
   ESP_ERROR_CHECK(esp_now_register_send_cb((esp_now_send_cb_t)on_data_sent));
   ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
 
-  // Imposta la Primary Master Key (PMK) caricata dall'NVS
+  // Set the Primary Master Key (PMK) loaded from NVS
   ESP_ERROR_CHECK(esp_now_set_pmk(s_esp_now_pmk));
 
-  // 4. Carica il MAC da NVS
+  // 4. Load the MAC from NVS
   uint8_t *mac_data = NULL;
   size_t mac_len = 0;
   err = secure_store_read(NVS_KEY_HUB_MAC, &mac_data, &mac_len);
@@ -170,8 +170,7 @@ bool hub_comm_pair(uint32_t timeout_ms) {
   xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
   esp_now_send(bcast_mac, (uint8_t *)&req_packet, sizeof(req_packet.type));
 
-  // Aspetta finché non riceve un pacchetto MSG_TYPE_PAIR (dal Gateway) o va in
-  // timeout
+  // Wait until a MSG_TYPE_PAIR packet is received (from Gateway) or timeout
   EventBits_t bits =
       xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_PAIR, pdTRUE,
                           pdFALSE, pdMS_TO_TICKS(timeout_ms));
@@ -179,12 +178,12 @@ bool hub_comm_pair(uint32_t timeout_ms) {
   esp_now_del_peer(bcast_mac);
 
   if (bits & EVENT_RECV_PAIR) {
-    // Salviamo il MAC in modo sicuro
+    // Save the MAC address in a secure way
     memcpy(s_hub_mac, s_last_recv_mac, ESP_NOW_ETH_ALEN);
     secure_store_write(NVS_KEY_HUB_MAC, s_hub_mac, ESP_NOW_ETH_ALEN);
 
     s_is_paired = true;
-    add_hub_peer(s_hub_mac); // Aggiunge come peer cifrato
+    add_hub_peer(s_hub_mac); // Add as an encrypted peer
     ESP_LOGI(TAG_HUB_COMM, "Pairing avvenuto con successo.");
     return true;
   }
@@ -212,7 +211,7 @@ bool hub_comm_send_alarm(uint8_t alarm_code, uint8_t max_retries) {
       continue;
     }
 
-    // Aspetta ACK (livello MAC)
+    // Wait for ACK (MAC level)
     EventBits_t bits = xEventGroupWaitBits(s_espnow_event_group,
                                            EVENT_SEND_SUCCESS | EVENT_SEND_FAIL,
                                            pdTRUE, pdFALSE, pdMS_TO_TICKS(100));
@@ -222,13 +221,13 @@ bool hub_comm_send_alarm(uint8_t alarm_code, uint8_t max_retries) {
       return true;
     }
 
-    ESP_LOGW(TAG_HUB_COMM, "Fallimento invio allarme, ritento... (%d/%d)",
-             i + 1, max_retries);
-    // Piccolo backoff prima di ritentare
+    ESP_LOGW(TAG_HUB_COMM, "Failed to send alarm, retrying... (%d/%d)", i + 1,
+             max_retries);
+    // Small backoff before retrying
     vTaskDelay(pdMS_TO_TICKS(10 + (i * 10)));
   }
 
-  ESP_LOGE(TAG_HUB_COMM, "Impossibile inviare l'allarme dopo %d tentativi.",
+  ESP_LOGE(TAG_HUB_COMM, "Unable to send alarm after %d attempts.",
            max_retries);
   return false;
 }
@@ -241,12 +240,12 @@ bool hub_comm_get_information(hub_info_t *info, uint32_t timeout_ms,
   esp_now_packet_t req_packet = {.type = MSG_TYPE_INFO_REQ};
 
   for (uint8_t i = 0; i < max_retries; i++) {
-    // Pulisce i flag prima di ogni tentativo
+    // Clear the flags before each attempt
     xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_INFO |
                                                    EVENT_SEND_SUCCESS |
                                                    EVENT_SEND_FAIL);
 
-    // 1. Tenta l'invio
+    // 1. Attempt to send
     esp_err_t err = esp_now_send(s_hub_mac, (uint8_t *)&req_packet,
                                  sizeof(req_packet.type));
     if (err != ESP_OK) {
@@ -256,26 +255,27 @@ bool hub_comm_get_information(hub_info_t *info, uint32_t timeout_ms,
       continue;
     }
 
-    // 2. Attende l'ACK fisico (il pacchetto ha raggiunto l'antenna dell'Hub?)
-    // Diamo un timeout molto breve (es. 50ms) per l'ACK di livello MAC
+    // 2. Wait for ACK (MAC level - did the packet reach the Hub's antenna?)
+    // Use a very short timeout ( 50ms) for the MAC-level ACK
     EventBits_t send_bits = xEventGroupWaitBits(
         s_espnow_event_group, EVENT_SEND_SUCCESS | EVENT_SEND_FAIL, pdTRUE,
         pdFALSE, pdMS_TO_TICKS(50));
 
     if (!(send_bits & EVENT_SEND_SUCCESS)) {
-      ESP_LOGW(TAG_HUB_COMM, "Tentativo %d: ACK non ricevuto dall'Hub.", i + 1);
+      ESP_LOGW(TAG_HUB_COMM, "Attempt %d: No ACK received from Hub.", i + 1);
       vTaskDelay(
-          pdMS_TO_TICKS(10 + (i * 10))); // Backoff incrementale (10ms, 20ms...)
-      continue;                          // Salta il resto e riprova
+          pdMS_TO_TICKS(10 + (i * 10))); // Incremental backoff (10ms, 20ms...)
+      continue;                          // Skip the rest and try again
     }
 
-    // 3. ACK ricevuto! Ora attende la risposta applicativa con le informazioni
+    // 3. ACK received! Now wait for the application response with the
+    // information
     EventBits_t recv_bits =
         xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_INFO, pdTRUE,
                             pdFALSE, pdMS_TO_TICKS(timeout_ms));
 
     if (recv_bits & EVENT_RECV_INFO) {
-      // Successo totale: popola la struttura per l'utente
+      // Success: populate the struct for the user
       info->timestamp = s_last_recv_packet.payload.info_resp.timestamp;
       info->do_ml_training =
           s_last_recv_packet.payload.info_resp.do_ml_training;
@@ -283,15 +283,14 @@ bool hub_comm_get_information(hub_info_t *info, uint32_t timeout_ms,
           s_last_recv_packet.payload.info_resp.ml_duration_ms;
       info->do_reset = s_last_recv_packet.payload.info_resp.do_reset;
 
-      // --- INIZIO SINCRONIZZAZIONE AUTOMATICA OROLOGIO ---
-      // Un timestamp > 1000000000 assicura che sia una data valida (successiva
-      // al 2001)
+      // --- START OF AUTOMATIC CLOCK SYNCHRONIZATION ---
+      // A timestamp > 1000000000 ensures that it is a valid date (after 2001)
       if (info->timestamp > 1000000000) {
-        // Imposta il fuso orario italiano
+        // Set the Italian time zone
         setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
         tzset();
 
-        // Aggiorna l'orologio di sistema (RTC)
+        // Updates the system clock (RTC)
         struct timeval tv;
         tv.tv_sec = info->timestamp;
         tv.tv_usec = 0;
@@ -300,15 +299,13 @@ bool hub_comm_get_information(hub_info_t *info, uint32_t timeout_ms,
         ESP_LOGI(TAG_HUB_COMM, "Orologio sincronizzato internamente a: %lu",
                  info->timestamp);
       } else {
-        ESP_LOGW(
-            TAG_HUB_COMM,
-            "Timestamp ricevuto non valido (%lu), orologio non aggiornato.",
-            info->timestamp);
+        ESP_LOGW(TAG_HUB_COMM,
+                 "Received timestamp is not valid (%lu), clock not updated.",
+                 info->timestamp);
       }
-      // --- FINE SINCRONIZZAZIONE AUTOMATICA OROLOGIO ---
+      // --- END OF AUTOMATIC CLOCK SYNCHRONIZATION ---
 
-      ESP_LOGI(TAG_HUB_COMM, "Info ricevute con successo al tentativo %d",
-               i + 1);
+      ESP_LOGI(TAG_HUB_COMM, "Info received successfully on attempt %d", i + 1);
       return true;
     } else {
       ESP_LOGW(TAG_HUB_COMM,

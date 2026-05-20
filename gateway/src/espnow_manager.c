@@ -21,14 +21,7 @@
 
 static const char *TAG = "ESPNOW_MGR";
 
-/* -------------------------------------------------------------------------- */
-/*  NVS keys for ESP-NOW security material                                    */
-/* -------------------------------------------------------------------------- */
-
-#define NVS_KEY_PMK "esp_now_pmk"
-#define NVS_KEY_LMK "esp_now_lmk"
-
-#include "../../include/secrets.h"
+#include "secrets.h"
 
 /* -------------------------------------------------------------------------- */
 /*  Internal state                                                             */

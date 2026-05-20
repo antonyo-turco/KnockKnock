@@ -8,8 +8,8 @@
 #include "nvs_flash.h"
 #include "secure_store.h"
 #include <string.h>
-#include <time.h>
 #include <sys/time.h>
+#include <time.h>
 
 static const char *TAG_HUB_COMM = "HUB_COMM";
 
@@ -17,26 +17,25 @@ static const char *TAG_HUB_COMM = "HUB_COMM";
 #define NVS_NAMESPACE "storage"
 #define NVS_KEY_HUB_MAC "hub_mac"
 
-// Variabili di stato interne
+// State variables
 static uint8_t s_hub_mac[ESP_NOW_ETH_ALEN] = {0};
 static bool s_is_paired = false;
 
 static uint8_t s_esp_now_pmk[16];
 static uint8_t s_esp_now_lmk[16];
 
-// FreeRTOS Event Group per sincronizzare le callback asincrone col task
-// principale
+// FreeRTOS Event Group for syncrhonize async callbacks with main task
 static EventGroupHandle_t s_espnow_event_group;
 #define EVENT_SEND_SUCCESS BIT0
 #define EVENT_SEND_FAIL BIT1
 #define EVENT_RECV_PAIR BIT2
 #define EVENT_RECV_INFO BIT3
 
-// Buffer globale temporaneo per salvare i dati ricevuti
+// Temporary global buffer for received data
 static esp_now_packet_t s_last_recv_packet;
 static uint8_t s_last_recv_mac[ESP_NOW_ETH_ALEN];
 
-// --- CALLBACKS DI ESP-NOW (Aggiornate per ESP-IDF v5+) ---
+// Callbacks of ESP-NOW (Updated for ESP-IDF v5+)
 
 static void on_data_sent(const uint8_t *mac_addr,
                          esp_now_send_status_t status) {
@@ -47,7 +46,7 @@ static void on_data_sent(const uint8_t *mac_addr,
   }
 }
 
-// In ESP-IDF v5, il primo argomento non è più il puntatore al MAC, ma una
+// In ESP-IDF v5, the first argument is no longer a pointer to the MAC, but a
 // struct "esp_now_recv_info_t"
 static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
                          const uint8_t *data, int len) {
@@ -98,21 +97,21 @@ esp_err_t hub_comm_init(void) {
   // Carica le chiavi PMK e LMK dall'NVS sicuro, o usa i default
   char *pmk_str = NULL;
   char *lmk_str = NULL;
-  
+
   if (secure_store_read_string("esp_now_pmk", &pmk_str) == ESP_OK) {
-      memcpy(s_esp_now_pmk, pmk_str, 16);
-      free(pmk_str);
+    memcpy(s_esp_now_pmk, pmk_str, 16);
+    free(pmk_str);
   } else {
-      memcpy(s_esp_now_pmk, DEFAULT_ESP_NOW_PMK, 16);
-      secure_store_write_string("esp_now_pmk", DEFAULT_ESP_NOW_PMK);
+    memcpy(s_esp_now_pmk, DEFAULT_ESP_NOW_PMK, 16);
+    secure_store_write_string("esp_now_pmk", DEFAULT_ESP_NOW_PMK);
   }
 
   if (secure_store_read_string("esp_now_lmk", &lmk_str) == ESP_OK) {
-      memcpy(s_esp_now_lmk, lmk_str, 16);
-      free(lmk_str);
+    memcpy(s_esp_now_lmk, lmk_str, 16);
+    free(lmk_str);
   } else {
-      memcpy(s_esp_now_lmk, DEFAULT_ESP_NOW_LMK, 16);
-      secure_store_write_string("esp_now_lmk", DEFAULT_ESP_NOW_LMK);
+    memcpy(s_esp_now_lmk, DEFAULT_ESP_NOW_LMK, 16);
+    secure_store_write_string("esp_now_lmk", DEFAULT_ESP_NOW_LMK);
   }
 
   // 2. Inizializza Wi-Fi in modalità Station
@@ -143,11 +142,13 @@ esp_err_t hub_comm_init(void) {
     memcpy(s_hub_mac, mac_data, ESP_NOW_ETH_ALEN);
     s_is_paired = true;
     add_hub_peer(s_hub_mac);
-    ESP_LOGI(TAG_HUB_COMM, "Hub MAC caricato in modo sicuro: %02X:%02X:%02X:%02X:%02X:%02X",
+    ESP_LOGI(TAG_HUB_COMM,
+             "Hub MAC caricato in modo sicuro: %02X:%02X:%02X:%02X:%02X:%02X",
              s_hub_mac[0], s_hub_mac[1], s_hub_mac[2], s_hub_mac[3],
              s_hub_mac[4], s_hub_mac[5]);
   }
-  if (mac_data) free(mac_data);
+  if (mac_data)
+    free(mac_data);
 
   return ESP_OK;
 }
@@ -156,7 +157,7 @@ bool hub_comm_is_paired(void) { return s_is_paired; }
 
 bool hub_comm_pair(uint32_t timeout_ms) {
   ESP_LOGI(TAG_HUB_COMM, "Inviando richiesta di pairing (broadcast)...");
-  
+
   uint8_t bcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   esp_now_peer_info_t peer_info = {};
   peer_info.channel = WIFI_CHANNEL;
@@ -169,11 +170,12 @@ bool hub_comm_pair(uint32_t timeout_ms) {
   xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
   esp_now_send(bcast_mac, (uint8_t *)&req_packet, sizeof(req_packet.type));
 
-  // Aspetta finché non riceve un pacchetto MSG_TYPE_PAIR (dal Gateway) o va in timeout
+  // Aspetta finché non riceve un pacchetto MSG_TYPE_PAIR (dal Gateway) o va in
+  // timeout
   EventBits_t bits =
       xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_PAIR, pdTRUE,
                           pdFALSE, pdMS_TO_TICKS(timeout_ms));
-                          
+
   esp_now_del_peer(bcast_mac);
 
   if (bits & EVENT_RECV_PAIR) {
@@ -248,8 +250,8 @@ bool hub_comm_get_information(hub_info_t *info, uint32_t timeout_ms,
     esp_err_t err = esp_now_send(s_hub_mac, (uint8_t *)&req_packet,
                                  sizeof(req_packet.type));
     if (err != ESP_OK) {
-      ESP_LOGW(TAG_HUB_COMM, "Errore interno ESP-NOW, ritento... (%d/%d)", i + 1,
-               max_retries);
+      ESP_LOGW(TAG_HUB_COMM, "Errore interno ESP-NOW, ritento... (%d/%d)",
+               i + 1, max_retries);
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
@@ -281,31 +283,37 @@ bool hub_comm_get_information(hub_info_t *info, uint32_t timeout_ms,
           s_last_recv_packet.payload.info_resp.ml_duration_ms;
       info->do_reset = s_last_recv_packet.payload.info_resp.do_reset;
 
+      // --- INIZIO SINCRONIZZAZIONE AUTOMATICA OROLOGIO ---
+      // Un timestamp > 1000000000 assicura che sia una data valida (successiva
+      // al 2001)
+      if (info->timestamp > 1000000000) {
+        // Imposta il fuso orario italiano
+        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+        tzset();
 
-            // --- INIZIO SINCRONIZZAZIONE AUTOMATICA OROLOGIO ---
-            // Un timestamp > 1000000000 assicura che sia una data valida (successiva al 2001)
-            if (info->timestamp > 1000000000) { 
-                // Imposta il fuso orario italiano
-                setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
-                tzset();
+        // Aggiorna l'orologio di sistema (RTC)
+        struct timeval tv;
+        tv.tv_sec = info->timestamp;
+        tv.tv_usec = 0;
+        settimeofday(&tv, NULL);
 
-                // Aggiorna l'orologio di sistema (RTC)
-                struct timeval tv;
-                tv.tv_sec = info->timestamp;
-                tv.tv_usec = 0;
-                settimeofday(&tv, NULL);
-                
-                ESP_LOGI(TAG_HUB_COMM, "Orologio sincronizzato internamente a: %lu", info->timestamp);
-            } else {
-                ESP_LOGW(TAG_HUB_COMM, "Timestamp ricevuto non valido (%lu), orologio non aggiornato.", info->timestamp);
-            }
-            // --- FINE SINCRONIZZAZIONE AUTOMATICA OROLOGIO ---
+        ESP_LOGI(TAG_HUB_COMM, "Orologio sincronizzato internamente a: %lu",
+                 info->timestamp);
+      } else {
+        ESP_LOGW(
+            TAG_HUB_COMM,
+            "Timestamp ricevuto non valido (%lu), orologio non aggiornato.",
+            info->timestamp);
+      }
+      // --- FINE SINCRONIZZAZIONE AUTOMATICA OROLOGIO ---
 
-      ESP_LOGI(TAG_HUB_COMM, "Info ricevute con successo al tentativo %d", i + 1);
+      ESP_LOGI(TAG_HUB_COMM, "Info ricevute con successo al tentativo %d",
+               i + 1);
       return true;
     } else {
-      ESP_LOGW(TAG_HUB_COMM, "Tentativo %d: L'Hub non ha risposto in tempo (%lu ms).",
-               i + 1, timeout_ms);
+      ESP_LOGW(TAG_HUB_COMM,
+               "Tentativo %d: L'Hub non ha risposto in tempo (%lu ms).", i + 1,
+               timeout_ms);
     }
   }
 

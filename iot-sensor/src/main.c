@@ -47,7 +47,7 @@
 #include "feature_extraction.h"
 #include "hub_communication.h"
 #include "secure_store.h"
-#include "tinyml_baseline_model.h"
+
 #include "tinyml_training.h"
 
 static const char *TAG = "MAIN";
@@ -124,7 +124,8 @@ static void goto_deep_sleep(void) {
   }
 
   // GPIO: ADXL362 INT1 line goes high on activity
-  esp_deep_sleep_enable_gpio_wakeup(1ULL << MY_PIN_INT1, ESP_GPIO_WAKEUP_GPIO_HIGH);
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << MY_PIN_INT1,
+                                    ESP_GPIO_WAKEUP_GPIO_HIGH);
 
   // Timer: periodic 24-h hub sync
   esp_sleep_enable_timer_wakeup((uint64_t)SYNC_INTERVAL_SEC * 1000000ULL);
@@ -549,7 +550,8 @@ void app_main(void) {
       if (hub_comm_init() == ESP_OK) {
         hub_info_t sync_info;
         if (!hub_comm_get_information(&sync_info, 5000, 3)) {
-          ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without valid time.");
+          ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without "
+                        "valid time.");
         }
         // hub_comm_get_information() calls settimeofday() internally on success
       }

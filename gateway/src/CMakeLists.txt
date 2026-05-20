@@ -2,10 +2,17 @@ idf_component_register(
     SRCS
         "main.c"
         "gateway.c"
+        "espnow_manager.c"
+        "secure_store.c"
+        "serial_bridge.c"
+    INCLUDE_DIRS
+        "../include"
     REQUIRES
-        secure_store
-        espnow_manager
-        serial_bridge
+        nvs_flash
+        mbedtls
         esp_timer
+        driver
         esp_wifi
+        esp_event
+        esp_netif
 )

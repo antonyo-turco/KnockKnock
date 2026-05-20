@@ -35,6 +35,7 @@
 
 #include "serial_bridge.h"
 #include "secure_store.h"
+#include "secrets.h"
 
 #include "driver/uart.h"
 #include "esp_log.h"
@@ -89,9 +90,6 @@ static const char *TAG = "SERIAL_BRIDGE";
 #define RX_TASK_STACK_SIZE 4096u
 #define RX_TASK_PRIORITY   5u
 
-/** NVS key for the AES-128 serial link key (16 raw bytes). */
-#define NVS_KEY_SERIAL_AES "serial_aes_key"
-
 /* -------------------------------------------------------------------------- */
 /*  Internal state                                                             */
 /* -------------------------------------------------------------------------- */
@@ -120,12 +118,9 @@ static esp_err_t load_or_generate_aes_key(void)
         return ESP_OK;
     }
 
-    /* Generate a new 128-bit key from the hardware RNG. */
-    ESP_LOGW(TAG, "Generating new AES-128 serial key via HW RNG...");
-    for (int i = 0; i < (int)sizeof(s_aes_key); i += 4) {
-        uint32_t rnd = esp_random();
-        memcpy(&s_aes_key[i], &rnd, 4);
-    }
+    /* Use fallback from secrets.h */
+    ESP_LOGW(TAG, "AES key not found in secure NVS – using and persisting default from secrets.h.");
+    memcpy(s_aes_key, DEFAULT_SERIAL_KEY, sizeof(s_aes_key));
 
     err = secure_store_write_blob(NVS_KEY_SERIAL_AES, s_aes_key, sizeof(s_aes_key));
     if (err != ESP_OK) {
@@ -133,7 +128,7 @@ static esp_err_t load_or_generate_aes_key(void)
         return err;
     }
 
-    ESP_LOGI(TAG, "New AES-128 serial key generated and persisted.");
+    ESP_LOGI(TAG, "Default AES-128 serial key persisted.");
     return ESP_OK;
 }
 

@@ -2,11 +2,20 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "8883:8883"   # TLS — for ESP32 edge hubs
+      # 1883 intentionally NOT exposed: Telegraf/backend use Docker-internal network
     volumes:
       - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/certs:/mosquitto/certs:ro
       - mosquitto_data:/mosquitto/data
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    ports:
+      - "3000:8000"
+    depends_on:
+      - mosquitto
     restart: unless-stopped
 
   influxdb:
@@ -36,7 +45,7 @@ services:
   grafana:
     image: grafana/grafana:10.4.0
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:

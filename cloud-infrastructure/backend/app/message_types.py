@@ -31,6 +31,11 @@ class MessageType(str, Enum):
     DEVICE_LIST_REQUEST = "DEVICE_LIST_REQUEST"
     DEVICE_LIST_RESPONSE = "DEVICE_LIST_RESPONSE"
     DEVICE_ACK = "DEVICE_ACK"
+    ALARM_ENABLE = "ALARM_ENABLE"
+    ALARM_DISABLE = "ALARM_DISABLE"
+    ALARM_ACK = "ALARM_ACK"
+    START_TRAINING = "START_TRAINING"
+    TRAINING_ACK = "TRAINING_ACK"
 
 
 # ---------------------------------------------------------------------------

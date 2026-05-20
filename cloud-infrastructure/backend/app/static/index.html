@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>KnockKnock Dashboard</title>
+        <style>
+            :root {
+                --bg: #0f1117;
+                --surface: #1c1f2e;
+                --border: #2d3149;
+                --accent: #5865f2;
+                --success: #3ba55c;
+                --warning: #faa61a;
+                --danger: #ed4245;
+                --text: #dcddde;
+                --muted: #72767d;
+                --radius: 8px;
+                --mono: "Courier New", monospace;
+            }
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: system-ui, sans-serif;
+                font-size: 14px;
+                min-height: 100vh;
+            }
+
+            /* Header */
+            header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 14px 24px;
+                background: var(--surface);
+                border-bottom: 1px solid var(--border);
+            }
+            header h1 {
+                font-size: 18px;
+                letter-spacing: 0.5px;
+            }
+            header h1 span {
+                color: var(--accent);
+            }
+            .header-right {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            #conn-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: var(--muted);
+                transition: background 0.3s;
+            }
+            #conn-dot.ok {
+                background: var(--success);
+            }
+            #conn-dot.err {
+                background: var(--danger);
+            }
+            #conn-label {
+                color: var(--muted);
+                font-size: 12px;
+            }
+
+            /* Buttons */
+            button {
+                cursor: pointer;
+                border: none;
+                border-radius: var(--radius);
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 500;
+                transition: opacity 0.15s;
+            }
+            button:hover {
+                opacity: 0.85;
+            }
+            button:active {
+                opacity: 0.7;
+            }
+            .btn-accent {
+                background: var(--accent);
+                color: #fff;
+            }
+            .btn-success {
+                background: var(--success);
+                color: #fff;
+            }
+            .btn-danger {
+                background: var(--danger);
+                color: #fff;
+            }
+            .btn-ghost {
+                background: transparent;
+                color: var(--muted);
+                border: 1px solid var(--border);
+            }
+            .btn-sm {
+                padding: 3px 10px;
+                font-size: 12px;
+            }
+
+            /* Main layout */
+            main {
+                display: grid;
+                grid-template-columns: 1fr 340px;
+                gap: 20px;
+                padding: 20px 24px;
+                max-width: 1200px;
+                margin: 0 auto;
+            }
+            @media (max-width: 720px) {
+                main {
+                    grid-template-columns: 1fr;
+                }
+            }
+
+            /* Cards */
+            .card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                overflow: hidden;
+            }
+            .card-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 16px;
+                border-bottom: 1px solid var(--border);
+            }
+            .card-header h2 {
+                font-size: 14px;
+                font-weight: 600;
+            }
+            .card-body {
+                padding: 0;
+            }
+
+            /* Alarm toggle */
+            #alarm-btn {
+                min-width: 130px;
+            }
+
+            /* Devices table */
+            table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            thead th {
+                padding: 8px 12px;
+                text-align: left;
+                color: var(--muted);
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                border-bottom: 1px solid var(--border);
+            }
+            tbody tr {
+                border-bottom: 1px solid var(--border);
+                transition: background 0.1s;
+            }
+            tbody tr:last-child {
+                border-bottom: none;
+            }
+            tbody tr:hover {
+                background: rgba(88, 101, 242, 0.07);
+            }
+            td {
+                padding: 10px 12px;
+                vertical-align: middle;
+            }
+            .mac {
+                font-family: var(--mono);
+                font-size: 12px;
+                color: var(--muted);
+            }
+            .status-dot {
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--muted);
+                margin-right: 6px;
+            }
+            .status-dot.online {
+                background: var(--success);
+            }
+            .status-dot.offline {
+                background: var(--danger);
+            }
+
+            /* Inline name edit */
+            .name-cell {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .name-text {
+                cursor: text;
+                padding: 3px 4px;
+                border-radius: 4px;
+                border: 1px solid transparent;
+            }
+            .name-text:hover {
+                border-color: var(--border);
+            }
+            .name-input {
+                background: var(--bg);
+                border: 1px solid var(--accent);
+                color: var(--text);
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 13px;
+                width: 120px;
+            }
+            .name-input:focus {
+                outline: none;
+            }
+
+            /* Training popover */
+            .train-row {
+                display: none;
+                background: rgba(88, 101, 242, 0.06);
+            }
+            .train-row.open {
+                display: table-row;
+            }
+            .train-form {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+            }
+            .train-form label {
+                color: var(--muted);
+                font-size: 12px;
+            }
+            .train-form input {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                color: var(--text);
+                border-radius: 4px;
+                padding: 4px 8px;
+                width: 90px;
+                font-size: 13px;
+            }
+            .train-form input:focus {
+                outline: none;
+                border-color: var(--accent);
+            }
+
+            /* Empty state */
+            .empty {
+                padding: 32px;
+                text-align: center;
+                color: var(--muted);
+            }
+
+            /* Add sensor form */
+            .add-form {
+                display: none;
+                padding: 14px 16px;
+                border-top: 1px solid var(--border);
+                background: rgba(88, 101, 242, 0.05);
+            }
+            .add-form.open {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                align-items: flex-end;
+            }
+            .add-form .field {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+            .add-form label {
+                font-size: 11px;
+                color: var(--muted);
+                text-transform: uppercase;
+                letter-spacing: 0.6px;
+            }
+            .add-form input {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                color: var(--text);
+                border-radius: 4px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }
+            .add-form input:focus {
+                outline: none;
+                border-color: var(--accent);
+            }
+            .add-form input.error {
+                border-color: var(--danger);
+            }
+            .field-mac input {
+                width: 170px;
+                font-family: var(--mono);
+            }
+            .field-name input {
+                width: 160px;
+            }
+
+            /* Event log */
+            .event-log {
+                height: 480px;
+                overflow-y: auto;
+                padding: 8px 0;
+            }
+            .event-log::-webkit-scrollbar {
+                width: 4px;
+            }
+            .event-log::-webkit-scrollbar-thumb {
+                background: var(--border);
+                border-radius: 2px;
+            }
+            .event-item {
+                display: flex;
+                gap: 10px;
+                padding: 8px 14px;
+                border-bottom: 1px solid var(--border);
+                animation: fadein 0.2s;
+            }
+            .event-item:last-child {
+                border-bottom: none;
+            }
+            @keyframes fadein {
+                from {
+                    opacity: 0;
+                    transform: translateY(-4px);
+                }
+                to {
+                    opacity: 1;
+                }
+            }
+            .event-time {
+                color: var(--muted);
+                font-size: 11px;
+                font-family: var(--mono);
+                white-space: nowrap;
+                padding-top: 2px;
+            }
+            .event-body {
+                flex: 1;
+            }
+            .event-type {
+                display: inline-block;
+                font-size: 11px;
+                font-weight: 600;
+                border-radius: 4px;
+                padding: 1px 6px;
+                margin-bottom: 3px;
+            }
+            .ev-alarm {
+                background: rgba(237, 66, 69, 0.2);
+                color: var(--danger);
+            }
+            .ev-ack {
+                background: rgba(59, 165, 92, 0.2);
+                color: var(--success);
+            }
+            .ev-training {
+                background: rgba(250, 166, 26, 0.2);
+                color: var(--warning);
+            }
+            .ev-other {
+                background: rgba(88, 101, 242, 0.2);
+                color: var(--accent);
+            }
+            .event-detail {
+                font-size: 12px;
+                color: var(--muted);
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Knock<span>Knock</span></h1>
+            <div class="header-right">
+                <div id="conn-dot"></div>
+                <span id="conn-label">Connecting…</span>
+                <button id="alarm-btn" class="btn-success">🔔 Alarm ON</button>
+            </div>
+        </header>
+
+        <main>
+            <!-- Devices -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>Sensors</h2>
+                    <div style="display: flex; gap: 8px">
+                        <button id="sync-btn" class="btn-ghost btn-sm">
+                            ↻ Sync from hub
+                        </button>
+                        <button
+                            id="add-btn"
+                            class="btn-accent btn-sm"
+                            onclick="openAddForm()"
+                        >
+                            ＋ Add sensor
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>MAC</th>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="device-tbody">
+                            <tr>
+                                <td colspan="4" class="empty">Loading…</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <!-- Register new sensor form -->
+                    <div class="add-form" id="add-form">
+                        <div class="field field-mac">
+                            <label for="add-mac">MAC address</label>
+                            <input
+                                id="add-mac"
+                                type="text"
+                                placeholder="AA:BB:CC:DD:EE:FF"
+                                autocomplete="off"
+                                spellcheck="false"
+                                oninput="clearAddError()"
+                            />
+                        </div>
+                        <div class="field field-name">
+                            <label for="add-name">Name (optional)</label>
+                            <input
+                                id="add-name"
+                                type="text"
+                                placeholder="e.g. Front door"
+                                autocomplete="off"
+                            />
+                        </div>
+                        <div class="field" style="justify-content: flex-end">
+                            <label style="visibility: hidden">x</label>
+                            <div style="display: flex; gap: 6px">
+                                <button
+                                    class="btn-accent btn-sm"
+                                    onclick="submitAddDevice()"
+                                >
+                                    Register
+                                </button>
+                                <button
+                                    class="btn-ghost btn-sm"
+                                    onclick="closeAddForm()"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                        <div
+                            id="add-error"
+                            style="
+                                width: 100%;
+                                color: var(--danger);
+                                font-size: 12px;
+                                display: none;
+                            "
+                        ></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Events -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>Live Events</h2>
+                    <button id="clear-btn" class="btn-ghost btn-sm">
+                        Clear
+                    </button>
+                </div>
+                <div class="event-log" id="event-log">
+                    <div class="empty">Waiting for events…</div>
+                </div>
+            </div>
+        </main>
+
+        <script>
+            const API = window.location.origin;
+            let alarmEnabled = true;
+
+            // ── Connection status ─────────────────────────────────────────────────────────
+            const connDot = document.getElementById("conn-dot");
+            const connLabel = document.getElementById("conn-label");
+
+            function setConn(ok) {
+                connDot.className = ok ? "ok" : "err";
+                connLabel.textContent = ok ? "Connected" : "Disconnected";
+            }
+
+            // ── Alarm toggle ──────────────────────────────────────────────────────────────
+            const alarmBtn = document.getElementById("alarm-btn");
+
+            function renderAlarmBtn() {
+                alarmBtn.textContent = alarmEnabled
+                    ? "🔔 Alarm ON"
+                    : "🔕 Alarm OFF";
+                alarmBtn.className = alarmEnabled
+                    ? "btn-success"
+                    : "btn-danger";
+            }
+
+            alarmBtn.addEventListener("click", async () => {
+                const endpoint = alarmEnabled
+                    ? "/api/alarm/disable"
+                    : "/api/alarm/enable";
+                await fetch(API + endpoint, { method: "POST" });
+                // UI updates when ALARM_ACK arrives via SSE
+            });
+
+            // ── Devices ───────────────────────────────────────────────────────────────────
+            let devices = {}; // mac → {mac_address, device_name, status}
+
+            async function loadDevices() {
+                const res = await fetch(API + "/api/devices");
+                const { devices: list } = await res.json();
+                devices = {};
+                list.forEach((d) => (devices[d.mac_address] = d));
+                renderDevices();
+            }
+
+            function renderDevices() {
+                const tbody = document.getElementById("device-tbody");
+                const macs = Object.keys(devices);
+
+                if (macs.length === 0) {
+                    tbody.innerHTML =
+                        '<tr><td colspan="4" class="empty">No sensors registered.</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = "";
+                macs.forEach((mac) => {
+                    const d = devices[mac];
+                    const safe = mac.replace(/:/g, "_");
+
+                    // Main row
+                    const tr = document.createElement("tr");
+                    tr.id = `row-${safe}`;
+                    tr.innerHTML = `
+      <td class="mac">${mac}</td>
+      <td>
+        <div class="name-cell">
+          <span class="name-text" id="name-text-${safe}"
+                onclick="startRename('${safe}','${mac}')">${escHtml(d.device_name || mac)}</span>
+          <input class="name-input" id="name-input-${safe}" style="display:none"
+                 onblur="cancelRename('${safe}')"
+                 onkeydown="nameKey(event,'${safe}','${mac}')">
+        </div>
+      </td>
+      <td>
+        <span class="status-dot ${d.status === "online" ? "online" : "offline"}"></span>
+        ${d.status || "unknown"}
+      </td>
+      <td style="white-space:nowrap; display:flex; gap:6px; flex-wrap:wrap; padding:8px 12px">
+        <button class="btn-accent btn-sm" onclick="toggleTrain('${safe}')">⚡ Train</button>
+        <button class="btn-danger btn-sm" onclick="removeDevice('${mac}')">✕</button>
+      </td>
+    `;
+
+                    // Training sub-row
+                    const trainTr = document.createElement("tr");
+                    trainTr.id = `train-row-${safe}`;
+                    trainTr.className = "train-row";
+                    trainTr.innerHTML = `
+      <td colspan="4">
+        <div class="train-form">
+          <label>Duration:</label>
+          <input type="number" id="dur-${safe}" value="60000" min="1000" step="1000">
+          <span style="color:var(--muted);font-size:12px">ms</span>
+          <button class="btn-accent btn-sm" onclick="sendTrain('${mac}','${safe}')">Send</button>
+          <button class="btn-ghost btn-sm" onclick="toggleTrain('${safe}')">Cancel</button>
+        </div>
+      </td>
+    `;
+
+                    tbody.appendChild(tr);
+                    tbody.appendChild(trainTr);
+                });
+            }
+
+            // Rename helpers
+            function startRename(safe, mac) {
+                const text = document.getElementById(`name-text-${safe}`);
+                const input = document.getElementById(`name-input-${safe}`);
+                input.value = text.textContent;
+                text.style.display = "none";
+                input.style.display = "";
+                input.focus();
+                input.select();
+            }
+            function cancelRename(safe) {
+                document.getElementById(`name-text-${safe}`).style.display = "";
+                document.getElementById(`name-input-${safe}`).style.display =
+                    "none";
+            }
+            async function nameKey(e, safe, mac) {
+                if (e.key === "Escape") {
+                    cancelRename(safe);
+                    return;
+                }
+                if (e.key !== "Enter") return;
+                const name = document
+                    .getElementById(`name-input-${safe}`)
+                    .value.trim();
+                if (!name) return;
+                await fetch(
+                    `${API}/api/devices/${encodeURIComponent(mac)}?device_name=${encodeURIComponent(name)}`,
+                    { method: "PATCH" },
+                );
+                devices[mac].device_name = name;
+                document.getElementById(`name-text-${safe}`).textContent = name;
+                cancelRename(safe);
+            }
+
+            // Training helpers
+            function toggleTrain(safe) {
+                const row = document.getElementById(`train-row-${safe}`);
+                row.classList.toggle("open");
+            }
+            async function sendTrain(mac, safe) {
+                const dur =
+                    parseInt(document.getElementById(`dur-${safe}`).value) ||
+                    60000;
+                await fetch(API + "/api/training/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        mac_address: mac,
+                        duration_ms: dur,
+                    }),
+                });
+                toggleTrain(safe);
+                addEventItem({ type: "TRAINING_ACK", mac, queued: true }, true);
+            }
+
+            async function removeDevice(mac) {
+                if (!confirm(`Remove ${mac}?`)) return;
+                await fetch(`${API}/api/devices/${encodeURIComponent(mac)}`, {
+                    method: "DELETE",
+                });
+                delete devices[mac];
+                renderDevices();
+            }
+
+            // ── Register new sensor ───────────────────────────────────────────────────────
+            const _MAC_RE =
+                /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{12}$/;
+
+            function openAddForm() {
+                document.getElementById("add-form").classList.add("open");
+                document.getElementById("add-mac").value = "";
+                document.getElementById("add-name").value = "";
+                clearAddError();
+                document.getElementById("add-mac").focus();
+                document.getElementById("add-btn").setAttribute("disabled", "");
+            }
+
+            function closeAddForm() {
+                document.getElementById("add-form").classList.remove("open");
+                clearAddError();
+                document.getElementById("add-btn").removeAttribute("disabled");
+            }
+
+            function clearAddError() {
+                const err = document.getElementById("add-error");
+                err.style.display = "none";
+                err.textContent = "";
+                document.getElementById("add-mac").classList.remove("error");
+            }
+
+            function showAddError(msg) {
+                const err = document.getElementById("add-error");
+                err.textContent = msg;
+                err.style.display = "block";
+                document.getElementById("add-mac").classList.add("error");
+            }
+
+            async function submitAddDevice() {
+                const rawMac = document.getElementById("add-mac").value.trim();
+                const name = document.getElementById("add-name").value.trim();
+
+                if (!_MAC_RE.test(rawMac)) {
+                    showAddError(
+                        "Invalid MAC address — expected format AA:BB:CC:DD:EE:FF",
+                    );
+                    return;
+                }
+
+                const registerBtn = document.querySelector(
+                    "#add-form .btn-accent",
+                );
+                registerBtn.setAttribute("disabled", "");
+                registerBtn.textContent = "Registering…";
+
+                try {
+                    const res = await fetch(API + "/api/devices", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            mac_address: rawMac,
+                            device_name: name,
+                        }),
+                    });
+
+                    if (!res.ok) {
+                        const body = await res.json().catch(() => ({}));
+                        const detail =
+                            body?.detail?.[0]?.msg ||
+                            body?.detail ||
+                            `HTTP ${res.status}`;
+                        showAddError(String(detail));
+                        return;
+                    }
+
+                    const { mac_address } = await res.json();
+                    // Optimistically add to local state; DEVICE_ACK will
+                    // trigger a full re-sync from the hub shortly.
+                    devices[mac_address] = {
+                        mac_address,
+                        device_name: name || mac_address,
+                        status: "unknown",
+                    };
+                    renderDevices();
+                    addEventItem(
+                        {
+                            type: "ADD_DEVICE",
+                            mac_address,
+                            message: `Sensor registered, ADD_DEVICE sent to hub`,
+                        },
+                        true,
+                    );
+                    closeAddForm();
+                } catch (err) {
+                    showAddError(`Network error: ${err.message}`);
+                } finally {
+                    registerBtn.removeAttribute("disabled");
+                    registerBtn.textContent = "Register";
+                }
+            }
+
+            // Allow Enter key to submit the add form
+            document
+                .getElementById("add-mac")
+                .addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") submitAddDevice();
+                    if (e.key === "Escape") closeAddForm();
+                });
+            document
+                .getElementById("add-name")
+                .addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") submitAddDevice();
+                    if (e.key === "Escape") closeAddForm();
+                });
+
+            // ── Event log ─────────────────────────────────────────────────────────────────
+            const eventLog = document.getElementById("event-log");
+            let firstEvent = true;
+
+            function eventClass(type) {
+                if (!type) return "ev-other";
+                if (type.includes("ALARM") && !type.includes("ACK"))
+                    return "ev-alarm";
+                if (type.includes("ACK")) return "ev-ack";
+                if (type.includes("TRAINING")) return "ev-training";
+                return "ev-other";
+            }
+
+            function addEventItem(data, local = false) {
+                if (firstEvent) {
+                    eventLog.innerHTML = "";
+                    firstEvent = false;
+                }
+
+                const now = new Date().toLocaleTimeString();
+                const type = data.type || "?";
+                const detail = buildDetail(data);
+
+                const item = document.createElement("div");
+                item.className = "event-item";
+                item.innerHTML = `
+    <span class="event-time">${now}</span>
+    <div class="event-body">
+      <span class="event-type ${eventClass(type)}">${type}</span>
+      ${detail ? `<div class="event-detail">${detail}</div>` : ""}
+    </div>
+  `;
+
+                eventLog.insertBefore(item, eventLog.firstChild);
+
+                // Keep at most 100 entries
+                while (eventLog.children.length > 100) {
+                    eventLog.removeChild(eventLog.lastChild);
+                }
+            }
+
+            function buildDetail(d) {
+                const parts = [];
+                if (d.mac) parts.push(d.mac);
+                if (d.mac_address) parts.push(d.mac_address);
+                if (d.alarm != null) parts.push(`code=${d.alarm}`);
+                if (d.confidence != null)
+                    parts.push(`conf=${d.confidence.toFixed(3)}`);
+                if (d.alarm_enabled != null)
+                    parts.push(`enabled=${d.alarm_enabled}`);
+                if (d.queued != null)
+                    parts.push(
+                        d.queued ? "queued" : `failed: ${d.reason || ""}`,
+                    );
+                if (d.message) parts.push(d.message);
+                return escHtml(parts.join(" · "));
+            }
+
+            function escHtml(s) {
+                return String(s)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+            }
+
+            // ── SSE ───────────────────────────────────────────────────────────────────────
+            function connectSSE() {
+                const es = new EventSource(API + "/api/events");
+
+                es.onopen = () => setConn(true);
+                es.onerror = () => {
+                    setConn(false);
+                    es.close();
+                    setTimeout(connectSSE, 3000); // reconnect
+                };
+
+                es.onmessage = (e) => {
+                    let data;
+                    try {
+                        data = JSON.parse(e.data);
+                    } catch {
+                        return;
+                    }
+
+                    addEventItem(data);
+
+                    switch (data.type) {
+                        case "ALARM_ACK":
+                            alarmEnabled = !!data.alarm_enabled;
+                            renderAlarmBtn();
+                            break;
+                        case "DEVICE_LIST_RESPONSE":
+                            (data.devices || []).forEach((d) => {
+                                const mac = d.mac_address || d.mac;
+                                if (mac)
+                                    devices[mac] = {
+                                        mac_address: mac,
+                                        device_name:
+                                            d.device_name || d.name || mac,
+                                        status: d.active ? "online" : "offline",
+                                    };
+                            });
+                            renderDevices();
+                            break;
+                        case "DEVICE_ACK":
+                            // re-sync after add/remove
+                            loadDevices();
+                            break;
+                    }
+                };
+            }
+
+            // ── Init ──────────────────────────────────────────────────────────────────────
+            document
+                .getElementById("sync-btn")
+                .addEventListener("click", () => {
+                    fetch(API + "/api/devices/sync", { method: "POST" });
+                });
+            document
+                .getElementById("clear-btn")
+                .addEventListener("click", () => {
+                    eventLog.innerHTML =
+                        '<div class="empty">Waiting for events…</div>';
+                    firstEvent = true;
+                });
+
+            (async () => {
+                // Load initial alarm state
+                try {
+                    const r = await fetch(API + "/api/alarm/state");
+                    const { alarm_enabled } = await r.json();
+                    alarmEnabled = alarm_enabled;
+                    renderAlarmBtn();
+                } catch {}
+
+                await loadDevices();
+                connectSSE();
+            })();
+        </script>
+    </body>
+</html>

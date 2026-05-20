@@ -8,6 +8,11 @@
 #define CLOUD_MQTT_URI "mqtt://test.mosquitto.org:1883"
 #include "secrets.h"
 
+#define CLOUD_MQTT_EDGE_ID        "esp32-01"
+#define CLOUD_MQTT_TOPIC_COMMAND  "knockknock/edge/" CLOUD_MQTT_EDGE_ID "/command"
+#define CLOUD_MQTT_TOPIC_RESPONSE "knockknock/edge/" CLOUD_MQTT_EDGE_ID "/response"
+#define CLOUD_MQTT_TOPIC_STATUS   "knockknock/edge/" CLOUD_MQTT_EDGE_ID "/status"
+
 /* UART Configuration for Serial Bridge (Hub <-> Gateway) */
 #define HUB_UART_PORT   1
 #define HUB_UART_TX_PIN 17

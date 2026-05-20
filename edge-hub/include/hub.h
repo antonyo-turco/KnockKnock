@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 void hub_start(void);
+void hub_handle_mqtt_command(const char *data, int len);
 
 #ifdef __cplusplus
 }

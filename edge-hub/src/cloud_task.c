@@ -1,5 +1,6 @@
 #include "cloud_task.h"
 #include "config.h"
+#include "hub.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -55,12 +56,21 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
+    esp_mqtt_event_handle_t event = event_data;
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT Connected");
+            esp_mqtt_client_subscribe(s_mqtt_client, CLOUD_MQTT_TOPIC_COMMAND, 1);
             break;
         case MQTT_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "MQTT Disconnected");
+            break;
+        case MQTT_EVENT_DATA:
+            ESP_LOGI(TAG, "MQTT Data Received: topic=%.*s", event->topic_len, event->topic);
+            if (event->topic_len == strlen(CLOUD_MQTT_TOPIC_COMMAND) &&
+                strncmp(event->topic, CLOUD_MQTT_TOPIC_COMMAND, event->topic_len) == 0) {
+                hub_handle_mqtt_command(event->data, event->data_len);
+            }
             break;
         default:
             break;
@@ -134,9 +144,20 @@ esp_err_t cloud_publish_alarm(const uint8_t *mac, uint8_t alarm_code) {
     snprintf(payload, sizeof(payload), "{\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\", \"alarm\":%d}",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], alarm_code);
              
-    int msg_id = esp_mqtt_client_publish(s_mqtt_client, "iot/hub/alarms", payload, 0, 1, 0);
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, CLOUD_MQTT_TOPIC_STATUS, payload, 0, 1, 0);
     if (msg_id >= 0) {
         ESP_LOGI(TAG, "Published alarm info to cloud");
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+}
+
+esp_err_t cloud_publish_response(const char *payload) {
+    if (!s_mqtt_client) return ESP_FAIL;
+    
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, CLOUD_MQTT_TOPIC_RESPONSE, payload, 0, 1, 0);
+    if (msg_id >= 0) {
+        ESP_LOGI(TAG, "Published response to cloud");
         return ESP_OK;
     }
     return ESP_FAIL;

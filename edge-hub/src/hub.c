@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "driver/gpio.h"
 #include <sys/time.h>
 #include <string.h>
@@ -33,6 +34,14 @@ typedef struct {
 
 static hub_device_registry_t s_registry  = {0};
 static bool                  s_alarm_enabled = true;
+
+typedef struct {
+    uint8_t msg_type;
+    uint8_t payload[240];
+    size_t  len;
+} hub_event_t;
+
+static QueueHandle_t s_hub_queue = NULL;
 
 /* -------------------------------------------------------------------------- */
 /*  Registry helpers                                                           */
@@ -154,7 +163,7 @@ static void activate_buzzer(void) {
 /*  Serial bridge message handler (Gateway → Hub)                             */
 /* -------------------------------------------------------------------------- */
 
-static void on_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t len) {
+static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t len) {
     switch (msg_type) {
 
     case GW_TO_HUB_PAIR_NOTIF: {
@@ -221,6 +230,31 @@ static void on_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t len)
     default:
         ESP_LOGW(TAG, "Unknown message type from gateway: 0x%02X", msg_type);
         break;
+    }
+}
+
+static void on_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t len) {
+    if (!s_hub_queue) return;
+
+    hub_event_t ev;
+    ev.msg_type = msg_type;
+    ev.len = (len > sizeof(ev.payload)) ? sizeof(ev.payload) : len;
+    if (payload && ev.len > 0) {
+        memcpy(ev.payload, payload, ev.len);
+    }
+
+    if (xQueueSend(s_hub_queue, &ev, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Hub event queue full! Dropped message type 0x%02X", msg_type);
+    }
+}
+
+static void hub_task(void *pvParameters) {
+    hub_event_t ev;
+    ESP_LOGI(TAG, "Hub task started on Core %d", xPortGetCoreID());
+    while (1) {
+        if (xQueueReceive(s_hub_queue, &ev, portMAX_DELAY) == pdTRUE) {
+            process_gateway_msg(ev.msg_type, ev.payload, ev.len);
+        }
     }
 }
 
@@ -405,6 +439,15 @@ void hub_start(void) {
     ESP_LOGI(TAG, "Starting Hub logic");
     buzzer_init();
     load_registry();
+
+    s_hub_queue = xQueueCreate(10, sizeof(hub_event_t));
+    if (!s_hub_queue) {
+        ESP_LOGE(TAG, "Failed to create Hub event queue!");
+        return;
+    }
+
+    // Pin hub_task to Core 1 (APP CPU)
+    xTaskCreatePinnedToCore(hub_task, "hub_task", 4096, NULL, 3, NULL, 1);
 
     serial_bridge_config_t sb_cfg = {
         .uart_port = HUB_UART_PORT,

@@ -1,6 +1,10 @@
 #ifndef SECRETS_H
 #define SECRETS_H
 
+/* WiFi Configuration (leave empty to use SmartConfig/ESPTouch) */
+#define WIFI_SSID "test"
+#define WIFI_PASS "12345678"
+
 /* MQTT API Configuration (Cloud) */
 #define CLOUD_MQTT_USERNAME "testuser"
 #define CLOUD_MQTT_PASSWORD "testpass"

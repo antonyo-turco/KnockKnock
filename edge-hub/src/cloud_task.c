@@ -1,3 +1,4 @@
+#include <string.h>
 #include "cloud_task.h"
 #include "config.h"
 #include "hub.h"
@@ -96,31 +97,68 @@ static void wifi_init_sta(void) {
     ESP_ERROR_CHECK( esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL) );
 
     ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
+
+#if defined(WIFI_SSID) && defined(WIFI_PASS)
+    if (strlen(WIFI_SSID) > 0) {
+        ESP_LOGI(TAG, "Configuring WiFi using static credentials from secrets.h: %s", WIFI_SSID);
+        wifi_config_t wifi_config = {
+            .sta = {
+                .threshold.rssi = -127,
+                .pmf_cfg = {
+                    .capable = true,
+                    .required = false
+                },
+            },
+        };
+        strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
+        strncpy((char *)wifi_config.sta.password, WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    } else {
+        ESP_LOGI(TAG, "WiFi static credentials empty. Using saved NVS credentials or SmartConfig.");
+    }
+#else
+    ESP_LOGI(TAG, "WiFi static credentials not defined. Using saved NVS credentials or SmartConfig.");
+#endif
+
     ESP_ERROR_CHECK( esp_wifi_start() );
+}
+
+static bool has_static_wifi(void) {
+#if defined(WIFI_SSID) && defined(WIFI_PASS)
+    return strlen(WIFI_SSID) > 0;
+#else
+    return false;
+#endif
 }
 
 static void smartconfig_task(void * parm) {
     EventBits_t uxBits;
     
-    // Wait for either IP connection or a certain amount of time. If no IP, start SmartConfig.
-    uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT, false, true, pdMS_TO_TICKS(5000));
-    
-    if (!(uxBits & CONNECTED_BIT)) {
-        ESP_LOGI(TAG, "Starting SmartConfig");
-        ESP_ERROR_CHECK( esp_smartconfig_set_type(SC_TYPE_ESPTOUCH) );
-        smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
-        ESP_ERROR_CHECK( esp_smartconfig_start(&cfg) );
-        
-        while (1) {
-            uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
-            if(uxBits & ESPTOUCH_DONE_BIT) {
-                ESP_LOGI(TAG, "smartconfig over");
-                esp_smartconfig_stop();
-                break;
-            }
-        }
+    if (has_static_wifi()) {
+        ESP_LOGI(TAG, "Waiting for WiFi connection (static credentials)...");
+        xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT, false, true, portMAX_DELAY);
+        ESP_LOGI(TAG, "Connected to WiFi successfully using static credentials.");
     } else {
-        ESP_LOGI(TAG, "Connected to WiFi via saved credentials.");
+        // Wait for either IP connection or a certain amount of time. If no IP, start SmartConfig.
+        uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT, false, true, pdMS_TO_TICKS(5000));
+        
+        if (!(uxBits & CONNECTED_BIT)) {
+            ESP_LOGI(TAG, "Starting SmartConfig");
+            ESP_ERROR_CHECK( esp_smartconfig_set_type(SC_TYPE_ESPTOUCH) );
+            smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+            ESP_ERROR_CHECK( esp_smartconfig_start(&cfg) );
+            
+            while (1) {
+                uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
+                if(uxBits & ESPTOUCH_DONE_BIT) {
+                    ESP_LOGI(TAG, "smartconfig over");
+                    esp_smartconfig_stop();
+                    break;
+                }
+            }
+        } else {
+            ESP_LOGI(TAG, "Connected to WiFi via saved credentials.");
+        }
     }
 
     // Now initialize MQTT

@@ -420,9 +420,10 @@ esp_err_t serial_bridge_init(const serial_bridge_config_t *config)
     /* ------------------------------------------------------------------ */
     /* 3. Start receive task                                               */
     /* ------------------------------------------------------------------ */
-    BaseType_t task_ok = xTaskCreate(rx_task, "serial_rx",
-                                      RX_TASK_STACK_SIZE, NULL,
-                                      RX_TASK_PRIORITY, &s_rx_task_handle);
+    BaseType_t task_ok = xTaskCreatePinnedToCore(rx_task, "serial_rx",
+                                                 RX_TASK_STACK_SIZE, NULL,
+                                                 RX_TASK_PRIORITY, &s_rx_task_handle,
+                                                 1); // Pin to Core 1 (APP CPU)
     if (task_ok != pdPASS) {
         ESP_LOGE(TAG, "Failed to create RX task.");
         return ESP_ERR_NO_MEM;

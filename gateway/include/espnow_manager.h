@@ -34,6 +34,7 @@ typedef enum {
     MSG_TYPE_ALARM     = 0x02, /**< Alarm notification from sensor.        */
     MSG_TYPE_INFO_REQ  = 0x03, /**< Information request from sensor.       */
     MSG_TYPE_INFO_RESP = 0x04, /**< Information response sent to sensor.   */
+    MSG_TYPE_PAIR_ACK  = 0x05, /**< Pairing acknowledgment from sensor.    */
 } gw_msg_type_t;
 
 /**
@@ -50,6 +51,9 @@ typedef struct __attribute__((packed)) {
             uint32_t ml_duration_ms;
             uint8_t  do_reset;
         } info_resp;        /**< Payload for MSG_TYPE_INFO_RESP. */
+        struct {
+            uint8_t target_mac[6];
+        } pair_req;         /**< Payload for MSG_TYPE_PAIR. */
     } payload;
 } gw_espnow_packet_t;
 
@@ -95,6 +99,8 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb);
  * @return ESP_OK on success.
  */
 esp_err_t espnow_manager_add_peer(const uint8_t *mac);
+esp_err_t espnow_manager_pair_peer(const uint8_t *mac);
+esp_err_t espnow_manager_send_pairing_req(const uint8_t *mac);
 
 /**
  * @brief Check whether a MAC is already registered as a peer.

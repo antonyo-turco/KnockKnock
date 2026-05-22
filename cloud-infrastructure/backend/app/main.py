@@ -110,8 +110,10 @@ def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
         for d in message.payload.get("devices", []):
             mac = d.get("mac_address") or d.get("mac", "")
             name = d.get("device_name") or d.get("name", "")
+            active = d.get("active", False)
             if mac:
                 device_manager.add_device(mac, name or None)
+                device_manager.update_device_status(mac, "online" if active else "offline")
     elif message.type == MessageType.ALARM_ACK:
         global _alarm_enabled
         _alarm_enabled = bool(message.payload.get("alarm_enabled", True))
@@ -291,7 +293,7 @@ async def training_start(body: StartTrainingBody):
 
 @app.get("/api/devices")
 async def list_devices():
-    return {"devices": [d.__dict__ for d in device_manager.get_devices()]}
+    return {"devices": [d.to_dict() for d in device_manager.get_devices()]}
 
 
 @app.post("/api/devices", status_code=201)
@@ -299,6 +301,7 @@ async def add_device(body: RegisterSensorBody):
     """Register a new sensor in the cloud and push an ADD_DEVICE command to
     the edge hub via MQTT so the hub's NVS registry is updated immediately."""
     device_manager.add_device(body.mac_address, body.device_name or None)
+    device_manager.update_device_status(body.mac_address, "offline")
     _publish(build_add_device_message(body.mac_address, body.device_name or None))
     logger.info(
         "Registered sensor %s ('%s') — ADD_DEVICE published to hub",

@@ -141,6 +141,30 @@ def copy_ca_to_firmware() -> None:
     shutil.copy2(BROKER_CA, FW_CA)
     print(f"[firmware] ca.crt → {FW_CA.relative_to(ROOT)}")
 
+    # Update ca_crt_embedded.c with the new certificate bytes
+    embedded_c = ROOT / "edge-hub" / "src" / "ca_crt_embedded.c"
+    if BROKER_CA.exists():
+        data = BROKER_CA.read_bytes()
+        hex_lines = []
+        for i in range(0, len(data), 16):
+            chunk = data[i:i+16]
+            hex_lines.append("    " + ", ".join(f"0x{b:02x}" for b in chunk))
+        hex_str = ",\n".join(hex_lines)
+        content = f"""/* Auto-generated from certs/ca.crt — do not edit manually */
+#include <stdint.h>
+
+/* Null-terminated PEM — matches the symbol ESP-IDF EMBED_TXTFILES would generate */
+const uint8_t _binary_certs_ca_crt_start[] = {{
+{hex_str},
+    0x00  /* null terminator */
+}};
+
+const uint8_t _binary_certs_ca_crt_end[] = {{ 0x00 }};
+const uint32_t _binary_certs_ca_crt_length = sizeof(_binary_certs_ca_crt_start) - 1;
+"""
+        embedded_c.write_text(content, encoding="utf-8")
+        print(f"[firmware] ca_crt_embedded.c updated")
+
 
 # ---------------------------------------------------------------------------
 # Step 4: read / patch config.h
@@ -240,7 +264,7 @@ def main() -> None:
     print("Done.")
     print("Next:")
     print("  1. docker compose -f cloud-infrastructure/docker-compose.yml up -d")
-    print("  2. Build and flash edge-hub firmware")
+    print("  2. cd edge-hub && pio run -t upload")
 
 
 if __name__ == "__main__":

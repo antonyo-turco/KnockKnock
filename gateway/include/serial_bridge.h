@@ -40,6 +40,8 @@ typedef enum {
     GW_TO_HUB_ALARM     = 0x10, /**< Forwarded alarm from a sensor.           */
     GW_TO_HUB_PAIR_NOTIF = 0x11, /**< A new sensor has paired with the gateway. */
     GW_TO_HUB_STATUS    = 0x12, /**< Periodic gateway heartbeat / status.     */
+    GW_TO_HUB_INFO_REQ  = 0x13, /**< Info request relayed from a sensor.      */
+    GW_TO_HUB_PAIR_SUCCESS = 0x14, /**< A sensor has successfully paired (cloud-initiated). */
 } gw_to_hub_msg_t;
 
 /**
@@ -49,6 +51,8 @@ typedef enum {
     HUB_TO_GW_INFO_RESP  = 0x20, /**< Info response to forward to a sensor.   */
     HUB_TO_GW_UNPAIR     = 0x21, /**< Instruct the gateway to drop a peer.    */
     HUB_TO_GW_REKEY      = 0x22, /**< Deliver new LMK/PMK to the gateway.     */
+    HUB_TO_GW_ADD_PEER   = 0x23, /**< Instruct the gateway to add a peer.     */
+    HUB_TO_GW_START_PAIRING = 0x24, /**< Instruct the gateway to initiate pairing with a sensor. */
 } hub_to_gw_msg_t;
 
 /* -------------------------------------------------------------------------- */
@@ -85,6 +89,21 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t sensor_mac[6]; /**< Sensor to remove from the peer list.         */
 } sb_unpair_payload_t;
+
+/** Add peer payload (Hub → Gateway). */
+typedef struct __attribute__((packed)) {
+    uint8_t sensor_mac[6]; /**< Sensor to add to the peer list.              */
+} sb_add_peer_payload_t;
+
+/** Start pairing payload (Hub → Gateway). */
+typedef struct __attribute__((packed)) {
+    uint8_t sensor_mac[6]; /**< Sensor to start pairing with.                */
+} sb_start_pairing_payload_t;
+
+/** Pair success payload (Gateway → Hub). */
+typedef struct __attribute__((packed)) {
+    uint8_t sensor_mac[6]; /**< Sensor that successfully paired.             */
+} sb_pair_success_payload_t;
 
 /** Gateway status heartbeat payload (Gateway → Hub). */
 typedef struct __attribute__((packed)) {

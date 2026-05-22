@@ -39,6 +39,7 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -47,6 +48,7 @@
 #include "feature_extraction.h"
 #include "hub_communication.h"
 #include "secure_store.h"
+#include "fft_processor.h"
 
 #include "tinyml_training.h"
 
@@ -82,6 +84,9 @@ static SemaphoreHandle_t s_data_ready_sem = NULL;
 
 /** Global sensor handle initialised in app_main. */
 static adxl362_handle_t g_sensor = NULL;
+
+static EventGroupHandle_t s_main_event_group = NULL;
+#define EVENT_TRAINING_DONE (1 << 0)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Internal helpers
@@ -121,6 +126,10 @@ static void goto_deep_sleep(void) {
     // Stop then restart so the new threshold takes effect
     adxl362_stop_measurement(g_sensor);
     adxl362_start_measurement(g_sensor);
+
+    // Clear any pending activity interrupt so we do not wake up immediately
+    uint8_t dummy_status = 0;
+    adxl362_get_status(g_sensor, &dummy_status);
   }
 
   // GPIO: ADXL362 INT1 line goes high on activity
@@ -260,6 +269,18 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   } else {
     ESP_LOGE(TAG, "Failed to save model to NVS!");
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Training task wrapper (for concurrent execution)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void training_task_wrapper(void *arg) {
+  run_training_phase(EXPLORING_DURATION_MS, TRAINING_DURATION_MS);
+  if (s_main_event_group) {
+    xEventGroupSetBits(s_main_event_group, EVENT_TRAINING_DONE);
+  }
+  vTaskDelete(NULL);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -426,6 +447,13 @@ void app_main(void) {
     esp_restart();
   }
 
+  // ── Init FFT workspace ────────────────────────────────────────────────────
+  if (fft_processor_init(FFT_SIZE) != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize FFT processor.");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    esp_restart();
+  }
+
   // ── Restore RTC flags from NVS after a power cut ──────────────────────────
   // RTC_DATA_ATTR memory survives deep sleep but is zeroed on power-on reset.
   // Restore the flags with lightweight NVS probes (blob-size checks only).
@@ -469,18 +497,36 @@ void app_main(void) {
   if (wakeup != ESP_SLEEP_WAKEUP_GPIO && wakeup != ESP_SLEEP_WAKEUP_TIMER) {
     ESP_LOGI(TAG, "=== FIRST BOOT / RESET ===");
 
-    // ── Step 1: Init hub comms ────────────────────────────────────────────
+    // ── Step 1: Init hub comms (Wi-Fi & ESP-NOW) ──────────────────────────
     ESP_ERROR_CHECK(hub_comm_init());
 
-    // ── Step 2: Pairing ───────────────────────────────────────────────────
+    // ── Print MAC Address ─────────────────────────────────────────────────────
+    uint8_t base_mac[6];
+    if (esp_wifi_get_mac(WIFI_IF_STA, base_mac) == ESP_OK) {
+      ESP_LOGI(TAG, "========================================");
+      ESP_LOGI(TAG, " SENSOR MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X",
+               base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
+      ESP_LOGI(TAG, "========================================");
+    }
+
+    // ── Step 2 & 4 Concurrent: Pairing & Training ───────────────────────
+    bool wait_for_training = false;
+
+    // Start training in background if needed (e.g. first boot)
+    bool need_training = !rtc_is_trained;
+    if (need_training) {
+      if (!s_main_event_group) {
+        s_main_event_group = xEventGroupCreate();
+      }
+      wait_for_training = true;
+      xTaskCreate(training_task_wrapper, "training_task", 8192, NULL, 4, NULL);
+    }
+
+    // Pairing (waits indefinitely)
     if (!rtc_is_provisioned) {
       if (!hub_comm_is_paired()) {
-        ESP_LOGI(TAG, "Not provisioned — waiting for hub pairing (15 s)...");
-        if (!hub_comm_pair(15000)) {
-          ESP_LOGE(TAG, "Pairing timeout. Sleeping and retrying on next boot.");
-          goto_deep_sleep();
-          // Never returns
-        }
+        ESP_LOGI(TAG, "Not provisioned — waiting indefinitely for hub pairing...");
+        hub_comm_pair(portMAX_DELAY);
       }
       // hub_comm_pair() saved the MAC to NVS internally
       rtc_is_provisioned = true;
@@ -495,29 +541,23 @@ void app_main(void) {
     bool got_info = hub_comm_get_information(&info, 5000, 3);
 
     if (got_info) {
-      // Clock sync is done inside hub_comm_get_information()
       if (info.do_reset) {
         handle_hub_reset(); // Never returns
       }
+      // If we didn't start training but hub requested it now
+      if (!need_training && info.do_ml_training) {
+        uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2 : EXPLORING_DURATION_MS;
+        uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2 : TRAINING_DURATION_MS;
+        run_training_phase(exp_ms, trn_ms);
+      }
+    } else {
+      ESP_LOGW(TAG, "Failed to get info/sync clock from hub after pairing.");
     }
 
-    // ── Step 4: Training (if needed or hub requested it) ──────────────────
-    bool need_training = !rtc_is_trained || (got_info && info.do_ml_training);
-
-    if (need_training) {
-      uint32_t exp_ms, trn_ms;
-      if (got_info && info.ml_duration_ms > 0) {
-        // Hub specified a total duration → split 50/50
-        exp_ms = info.ml_duration_ms / 2;
-        trn_ms = info.ml_duration_ms / 2;
-      } else {
-        exp_ms = EXPLORING_DURATION_MS;
-        trn_ms = TRAINING_DURATION_MS;
-      }
-      run_training_phase(exp_ms, trn_ms);
-    } else {
-      ESP_LOGI(TAG,
-               "Model already trained and hub did not request re-training.");
+    if (wait_for_training) {
+      ESP_LOGI(TAG, "Waiting for background ML training task to complete...");
+      xEventGroupWaitBits(s_main_event_group, EVENT_TRAINING_DONE, pdFALSE, pdFALSE, portMAX_DELAY);
+      ESP_LOGI(TAG, "Background ML training task completed.");
     }
 
     // ── Step 5: Deep sleep ────────────────────────────────────────────────

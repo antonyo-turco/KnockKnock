@@ -14,12 +14,16 @@ typedef enum {
     GW_TO_HUB_ALARM      = 0x10,
     GW_TO_HUB_PAIR_NOTIF = 0x11,
     GW_TO_HUB_STATUS     = 0x12,
+    GW_TO_HUB_INFO_REQ   = 0x13,
+    GW_TO_HUB_PAIR_SUCCESS = 0x14,
 } gw_to_hub_msg_t;
 
 typedef enum {
     HUB_TO_GW_INFO_RESP  = 0x20,
     HUB_TO_GW_UNPAIR     = 0x21,
     HUB_TO_GW_REKEY      = 0x22,
+    HUB_TO_GW_ADD_PEER   = 0x23,
+    HUB_TO_GW_START_PAIRING = 0x24,
 } hub_to_gw_msg_t;
 
 /* Payloads */
@@ -48,6 +52,18 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t sensor_mac[6];
 } sb_unpair_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t sensor_mac[6];
+} sb_add_peer_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t sensor_mac[6];
+} sb_start_pairing_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t sensor_mac[6];
+} sb_pair_success_payload_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t  num_peers;

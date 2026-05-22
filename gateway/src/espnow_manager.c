@@ -37,6 +37,10 @@ static espnow_recv_cb_t   s_user_recv_cb     = NULL;
 static uint8_t s_pmk[16];
 static uint8_t s_lmk[16];
 
+/* Pairing state lock to prevent Hub heartbeats from overwriting unencrypted state */
+static bool s_is_pairing = false;
+static uint8_t s_pairing_mac[ESP_NOW_ETH_ALEN] = {0};
+
 /* -------------------------------------------------------------------------- */
 /*  Internal helpers                                                           */
 /* -------------------------------------------------------------------------- */
@@ -66,20 +70,16 @@ static void load_or_create_key(const char *nvs_key,
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Send-done callback (runs at ISR level – keep it minimal).
+ * @brief Send-done callback – keep it minimal.
  */
 static void on_data_sent(const esp_now_send_info_t *tx_info,
                          esp_now_send_status_t status)
 {
     (void)tx_info;
-    BaseType_t woken = pdFALSE;
     if (status == ESP_NOW_SEND_SUCCESS) {
-        xEventGroupSetBitsFromISR(s_send_event_group, SEND_ACK_OK, &woken);
+        xEventGroupSetBits(s_send_event_group, SEND_ACK_OK);
     } else {
-        xEventGroupSetBitsFromISR(s_send_event_group, SEND_ACK_FAIL, &woken);
-    }
-    if (woken == pdTRUE) {
-        portYIELD_FROM_ISR();
+        xEventGroupSetBits(s_send_event_group, SEND_ACK_FAIL);
     }
 }
 
@@ -95,6 +95,11 @@ static void on_data_recv(const esp_now_recv_info_t *info,
         ESP_LOGW(TAG, "Received packet too short (%d bytes), discarding.", len);
         return;
     }
+
+    ESP_LOGI(TAG, "ESP-NOW packet received from %02X:%02X:%02X:%02X:%02X:%02X | len: %d | type: 0x%02X",
+             info->src_addr[0], info->src_addr[1], info->src_addr[2],
+             info->src_addr[3], info->src_addr[4], info->src_addr[5],
+             len, data[0]);
 
     if (s_user_recv_cb != NULL) {
         s_user_recv_cb(info->src_addr, (const gw_espnow_packet_t *)data, len);
@@ -141,12 +146,25 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb)
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) return err;
 
+    /* Disable Wi-Fi power save to ensure ESP-NOW packets are received reliably */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    /* Force standard B/G/N protocol to avoid mismatch between different ESP-IDF versions */
+    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+
     err = esp_wifi_start();
     if (err != ESP_OK) return err;
+
+    /* Force promiscuous mode to lock the channel in STA mode when disconnected */
+    esp_wifi_set_promiscuous(true);
 
     /* Fix channel – all nodes must operate on the same channel. */
     err = esp_wifi_set_channel(GATEWAY_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) return err;
+
+    uint8_t primary_chan = 0;
+    wifi_second_chan_t second_chan;
+    esp_wifi_get_channel(&primary_chan, &second_chan);
 
     /* ------------------------------------------------------------------ */
     /* 3. Initialise ESP-NOW                                               */
@@ -163,14 +181,40 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb)
     err = esp_now_register_recv_cb(on_data_recv);
     if (err != ESP_OK) return err;
 
-    /* Set Primary Master Key (PMK) – used to derive per-peer session keys. */
-    err = esp_now_set_pmk(s_pmk);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_now_set_pmk failed: %s", esp_err_to_name(err));
-        return err;
+    /* Set the Primary Master Key (PMK) */
+    // err = esp_now_set_pmk(s_pmk);
+    // if (err != ESP_OK) {
+    //     ESP_LOGE(TAG, "esp_now_set_pmk failed: %s", esp_err_to_name(err));
+    //     return err;
+    // }
+
+    /* ------------------------------------------------------------------ */
+    /* 4. Add unencrypted broadcast peer for pairing discovery.            */
+    /*    Sensors send MSG_TYPE_PAIR as unencrypted broadcast; the gateway */
+    /*    needs this peer to be able to send broadcast responses back.     */
+    /* ------------------------------------------------------------------ */
+    {
+        esp_now_peer_info_t bcast_peer = {0};
+        bcast_peer.channel = GATEWAY_WIFI_CHANNEL;
+        bcast_peer.ifidx   = WIFI_IF_AP;
+        bcast_peer.encrypt = false;
+        memset(bcast_peer.peer_addr, 0xFF, ESP_NOW_ETH_ALEN);
+        err = esp_now_add_peer(&bcast_peer);
+        if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
+            ESP_LOGW(TAG, "Failed to add broadcast peer: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "Broadcast peer registered (unencrypted).");
+        }
     }
 
-    ESP_LOGI(TAG, "ESP-NOW manager initialised on channel %d.", GATEWAY_WIFI_CHANNEL);
+    /* Log local MAC for diagnostics. */
+    uint8_t local_mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, local_mac);
+    ESP_LOGI(TAG, "ESP-NOW manager initialised. Local MAC: %02X:%02X:%02X:%02X:%02X:%02X",
+             local_mac[0], local_mac[1], local_mac[2],
+             local_mac[3], local_mac[4], local_mac[5]);
+    ESP_LOGI(TAG, "Configured channel: %d. Active channel: %d.", 
+             GATEWAY_WIFI_CHANNEL, primary_chan);
     return ESP_OK;
 }
 
@@ -178,29 +222,28 @@ esp_err_t espnow_manager_add_peer(const uint8_t *mac)
 {
     if (mac == NULL) return ESP_ERR_INVALID_ARG;
 
-    if (esp_now_is_peer_exist(mac)) {
-        return ESP_OK; /* Already registered – idempotent. */
+    if (s_is_pairing && memcmp(s_pairing_mac, mac, ESP_NOW_ETH_ALEN) == 0) {
+        ESP_LOGI(TAG, "Ignoring add_peer from Hub for %02X:%02X:%02X:%02X:%02X:%02X while pairing is in progress.",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return ESP_OK;
     }
 
-    // --- Send unencrypted PAIR ACK back to sensor ---
     esp_now_peer_info_t peer = {0};
     peer.channel = GATEWAY_WIFI_CHANNEL;
     peer.ifidx   = WIFI_IF_STA;
-    peer.encrypt = false;
-    memcpy(peer.peer_addr, mac, ESP_NOW_ETH_ALEN);
-    esp_now_add_peer(&peer);
-
-    gw_espnow_packet_t pkt = { .type = MSG_TYPE_PAIR };
-    esp_now_send(mac, (uint8_t*)&pkt, sizeof(pkt.type));
-    vTaskDelay(pdMS_TO_TICKS(50)); // Give time for packet to be sent
-
-    esp_now_del_peer(mac);
-    // ------------------------------------------------
-
     peer.encrypt = true;
+    memcpy(peer.peer_addr, mac, ESP_NOW_ETH_ALEN);
     memcpy(peer.lmk,       s_lmk, 16);
 
-    esp_err_t err = esp_now_add_peer(&peer);
+    esp_err_t err;
+    if (esp_now_is_peer_exist(mac)) {
+        err = esp_now_mod_peer(&peer);
+        ESP_LOGI(TAG, "Peer modified to encrypted: %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return err;
+    }
+
+    err = esp_now_add_peer(&peer);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to add peer %02X:%02X:%02X:%02X:%02X:%02X: %s",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
@@ -210,6 +253,91 @@ esp_err_t espnow_manager_add_peer(const uint8_t *mac)
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
     return err;
+}
+
+esp_err_t espnow_manager_pair_peer(const uint8_t *mac)
+{
+    if (mac == NULL) return ESP_ERR_INVALID_ARG;
+
+    ESP_LOGI(TAG, "Pairing request received from %02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    if (s_is_pairing && memcmp(s_pairing_mac, mac, ESP_NOW_ETH_ALEN) == 0) {
+        s_is_pairing = false; // Pairing finished, release lock
+    }
+
+    if (esp_now_is_peer_exist(mac)) {
+        esp_now_del_peer(mac);
+    }
+
+    // --- Send unencrypted PAIR ACK back to sensor via Broadcast to bypass ACKs ---
+    uint8_t bcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    if (!esp_now_is_peer_exist(bcast_mac)) {
+        esp_now_peer_info_t bcast_peer = {0};
+        bcast_peer.channel = GATEWAY_WIFI_CHANNEL;
+        bcast_peer.ifidx   = WIFI_IF_STA;
+        bcast_peer.encrypt = false;
+        memcpy(bcast_peer.peer_addr, bcast_mac, 6);
+        esp_now_add_peer(&bcast_peer);
+    }
+
+    gw_espnow_packet_t pkt = { .type = MSG_TYPE_PAIR_ACK };
+    memcpy(pkt.payload.pair_req.target_mac, mac, 6);
+    
+    // Clear send status event bits before transmitting
+    xEventGroupClearBits(s_send_event_group, SEND_ACK_OK | SEND_ACK_FAIL);
+    
+    esp_err_t send_err = esp_now_send(bcast_mac, (const uint8_t*)&pkt, sizeof(pkt.type) + 6);
+    if (send_err == ESP_OK) {
+        ESP_LOGI(TAG, "Pairing ACK broadcasted for %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        ESP_LOGE(TAG, "esp_now_send failed during pairing ACK: %s", esp_err_to_name(send_err));
+    }
+
+    esp_now_del_peer(mac);
+    
+    esp_now_peer_info_t perm_peer = {0};
+    perm_peer.channel = GATEWAY_WIFI_CHANNEL;
+    perm_peer.ifidx   = WIFI_IF_STA;
+    perm_peer.encrypt = true;
+    memcpy(perm_peer.peer_addr, mac, ESP_NOW_ETH_ALEN);
+    memcpy(perm_peer.lmk,       s_lmk, 16);
+    
+    esp_err_t err = esp_now_add_peer(&perm_peer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add permanent peer: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Permanent encrypted peer added.");
+    }
+    return err;
+}
+
+esp_err_t espnow_manager_send_pairing_req(const uint8_t *mac)
+{
+    if (mac == NULL) return ESP_ERR_INVALID_ARG;
+
+    // IMPORTANT: Se il MAC era già registrato come criptato (es. al boot), 
+    // dobbiamo declassarlo temporaneamente a 'non criptato' altrimenti il 
+    // driver Wi-Fi dell'ESP32 scarterà i pacchetti broadcast in chiaro in arrivo!
+    if (esp_now_is_peer_exist(mac)) {
+        esp_now_del_peer(mac);
+    }
+
+    esp_now_peer_info_t peer = {0};
+    peer.channel = GATEWAY_WIFI_CHANNEL;
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = false;
+    memcpy(peer.peer_addr, mac, ESP_NOW_ETH_ALEN);
+    esp_now_add_peer(&peer);
+
+    s_is_pairing = true;
+    memcpy(s_pairing_mac, mac, ESP_NOW_ETH_ALEN);
+
+    ESP_LOGI(TAG, "Gateway ready to pair. Passively waiting for Broadcast from %02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    return ESP_OK;
 }
 
 bool espnow_manager_is_peer(const uint8_t *mac)

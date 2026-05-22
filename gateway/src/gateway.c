@@ -34,8 +34,8 @@ static const char *TAG = "GATEWAY";
 /* -------------------------------------------------------------------------- */
 
 #define GW_UART_PORT   1
-#define GW_UART_TX_PIN 21
-#define GW_UART_RX_PIN 20
+#define GW_UART_TX_PIN 7
+#define GW_UART_RX_PIN 6
 #define GW_UART_BAUD   921600  /* High baud for low-latency relay. */
 
 /* -------------------------------------------------------------------------- */
@@ -81,16 +81,14 @@ static void handle_espnow_event(const gw_event_t *evt)
 
     switch (pkt->type) {
     case MSG_TYPE_PAIR: {
+        ESP_LOGI(TAG, "Received MSG_TYPE_PAIR from %02X:%02X:%02X:%02X:%02X:%02X",
+                 evt->src_mac[0], evt->src_mac[1], evt->src_mac[2],
+                 evt->src_mac[3], evt->src_mac[4], evt->src_mac[5]);
         /* Accept the sensor as a new encrypted peer. */
-        if (!espnow_manager_is_peer(evt->src_mac)) {
-            esp_err_t err = espnow_manager_add_peer(evt->src_mac);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to add peer.");
-                break;
-            }
-            ESP_LOGI(TAG, "New sensor paired: %02X:%02X:%02X:%02X:%02X:%02X",
-                     evt->src_mac[0], evt->src_mac[1], evt->src_mac[2],
-                     evt->src_mac[3], evt->src_mac[4], evt->src_mac[5]);
+        esp_err_t err = espnow_manager_pair_peer(evt->src_mac);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to pair peer.");
+            break;
         }
 
         /* Notify the Hub of the new pairing. */
@@ -128,11 +126,27 @@ static void handle_espnow_event(const gw_event_t *evt)
          */
         sb_pair_notif_payload_t req;
         memcpy(req.sensor_mac, evt->src_mac, 6);
-        serial_bridge_send(GW_TO_HUB_PAIR_NOTIF,
+        serial_bridge_send(GW_TO_HUB_INFO_REQ,
                            (const uint8_t *)&req, sizeof(req));
         ESP_LOGD(TAG, "INFO_REQ relayed to Hub for sensor %02X:%02X:%02X:%02X:%02X:%02X",
                  evt->src_mac[0], evt->src_mac[1], evt->src_mac[2],
                  evt->src_mac[3], evt->src_mac[4], evt->src_mac[5]);
+        break;
+    }
+
+    case MSG_TYPE_PAIR_ACK: {
+        ESP_LOGI(TAG, "Received MSG_TYPE_PAIR_ACK from %02X:%02X:%02X:%02X:%02X:%02X",
+                 evt->src_mac[0], evt->src_mac[1], evt->src_mac[2],
+                 evt->src_mac[3], evt->src_mac[4], evt->src_mac[5]);
+                 
+        /* Upgrade peer to encrypted! */
+        espnow_manager_add_peer(evt->src_mac);
+
+        /* Forward success to the Hub. */
+        sb_pair_success_payload_t succ;
+        memcpy(succ.sensor_mac, evt->src_mac, 6);
+        serial_bridge_send(GW_TO_HUB_PAIR_SUCCESS,
+                           (const uint8_t *)&succ, sizeof(succ));
         break;
     }
 
@@ -195,6 +209,19 @@ static void handle_serial_event(const gw_event_t *evt)
         break;
     }
 
+    case HUB_TO_GW_ADD_PEER: {
+        if (evt->payload_len < sizeof(sb_add_peer_payload_t)) break;
+
+        const sb_add_peer_payload_t *ap = (const sb_add_peer_payload_t *)evt->payload;
+        esp_err_t err = espnow_manager_add_peer(ap->sensor_mac);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Sensor %02X:%02X:%02X:%02X:%02X:%02X registered as peer.",
+                     ap->sensor_mac[0], ap->sensor_mac[1], ap->sensor_mac[2],
+                     ap->sensor_mac[3], ap->sensor_mac[4], ap->sensor_mac[5]);
+        }
+        break;
+    }
+
     case HUB_TO_GW_REKEY: {
         if (evt->payload_len < sizeof(sb_rekey_payload_t)) break;
 
@@ -210,6 +237,21 @@ static void handle_serial_event(const gw_event_t *evt)
         secure_store_write_string("esp_now_lmk", lmk_str);
 
         ESP_LOGW(TAG, "New ESP-NOW keys received and stored. Reboot required.");
+        break;
+    }
+
+    case HUB_TO_GW_START_PAIRING: {
+        if (evt->payload_len < sizeof(sb_start_pairing_payload_t)) break;
+
+        const sb_start_pairing_payload_t *sp = (const sb_start_pairing_payload_t *)evt->payload;
+        ESP_LOGI(TAG, "Instructed to start pairing with sensor %02X:%02X:%02X:%02X:%02X:%02X",
+                 sp->sensor_mac[0], sp->sensor_mac[1], sp->sensor_mac[2],
+                 sp->sensor_mac[3], sp->sensor_mac[4], sp->sensor_mac[5]);
+                 
+        esp_err_t err = espnow_manager_send_pairing_req(sp->sensor_mac);
+        if (err != ESP_OK) {
+             ESP_LOGE(TAG, "Failed to send pairing request to sensor.");
+        }
         break;
     }
 

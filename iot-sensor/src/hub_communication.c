@@ -58,11 +58,33 @@ static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
 
   esp_now_packet_t *packet = (esp_now_packet_t *)data;
 
+  ESP_LOGI(TAG_HUB_COMM, "RAW RECV: len=%d, type=0x%02X da %02X:%02X:%02X:%02X:%02X:%02X", 
+           len, packet->type, mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
   // Save the MAC address of the sender
   memcpy(s_last_recv_mac, mac_addr, ESP_NOW_ETH_ALEN);
 
-  if (packet->type == MSG_TYPE_PAIR) {
-    xEventGroupSetBits(s_espnow_event_group, EVENT_RECV_PAIR);
+  if (packet->type == MSG_TYPE_PAIR_ACK) {
+    ESP_LOGI(TAG_HUB_COMM, "Ricevuto PAIR ACK dal Gateway %02X:%02X:%02X:%02X:%02X:%02X",
+             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
+    // Check if the ACK contains our MAC in the payload to ensure it's meant for us
+    uint8_t my_mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, my_mac);
+    
+    if (len >= sizeof(packet->type) + 6 && 
+        memcmp(packet->payload.pair_req.target_mac, my_mac, 6) == 0) {
+      
+      esp_now_peer_info_t gw_peer = {0};
+      gw_peer.channel = WIFI_CHANNEL;
+      gw_peer.ifidx = WIFI_IF_STA;
+      gw_peer.encrypt = false;
+      memcpy(gw_peer.peer_addr, mac_addr, 6);
+      if (esp_now_is_peer_exist(mac_addr)) esp_now_mod_peer(&gw_peer);
+      else esp_now_add_peer(&gw_peer);
+
+      xEventGroupSetBits(s_espnow_event_group, EVENT_RECV_PAIR);
+    }
   } else if (packet->type == MSG_TYPE_INFO_RESP) {
     // Copia il payload per poterlo leggere nel task principale
     memcpy(&s_last_recv_packet, packet, len);
@@ -121,7 +143,15 @@ esp_err_t hub_comm_init(void) {
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  
+  // Disabilita il risparmio energetico Wi-Fi per evitare di perdere pacchetti ESP-NOW
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
+  // Forza il protocollo standard B/G/N per evitare mismatch tra versioni diverse di ESP-IDF
+  ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+
   ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 
   // Set the Wi-Fi channel (essential for ESP-NOW)
   ESP_ERROR_CHECK(esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE));
@@ -132,7 +162,20 @@ esp_err_t hub_comm_init(void) {
   ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
 
   // Set the Primary Master Key (PMK) loaded from NVS
-  ESP_ERROR_CHECK(esp_now_set_pmk(s_esp_now_pmk));
+  // ESP_ERROR_CHECK(esp_now_set_pmk(s_esp_now_pmk));
+
+  // Add unencrypted broadcast peer for pairing discovery
+  esp_now_peer_info_t bcast_peer = {0};
+  bcast_peer.channel = WIFI_CHANNEL;
+  bcast_peer.ifidx = WIFI_IF_STA;
+  bcast_peer.encrypt = false;
+  memset(bcast_peer.peer_addr, 0xFF, ESP_NOW_ETH_ALEN);
+  esp_err_t add_err = esp_now_add_peer(&bcast_peer);
+  if (add_err != ESP_OK && add_err != ESP_ERR_ESPNOW_EXIST) {
+      ESP_LOGW(TAG_HUB_COMM, "Failed to add broadcast peer: %s", esp_err_to_name(add_err));
+  } else {
+      ESP_LOGI(TAG_HUB_COMM, "Broadcast peer registered (unencrypted).");
+  }
 
   // 4. Load the MAC from NVS
   uint8_t *mac_data = NULL;
@@ -156,41 +199,63 @@ esp_err_t hub_comm_init(void) {
 bool hub_comm_is_paired(void) { return s_is_paired; }
 
 bool hub_comm_pair(uint32_t timeout_ms) {
-  ESP_LOGI(TAG_HUB_COMM, "Inviando richiesta di pairing (broadcast)...");
+  ESP_LOGI(TAG_HUB_COMM, "Avvio pairing in ricezione passiva %s...", 
+           (timeout_ms == portMAX_DELAY) ? "(attesa infinita)" : "");
+
+  uint32_t elapsed_ms = 0;
+  const uint32_t wait_interval_ms = 1000;
 
   uint8_t bcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  esp_now_peer_info_t peer_info = {};
-  peer_info.channel = WIFI_CHANNEL;
-  peer_info.ifidx = WIFI_IF_STA;
-  peer_info.encrypt = false;
-  memcpy(peer_info.peer_addr, bcast_mac, ESP_NOW_ETH_ALEN);
-  esp_now_add_peer(&peer_info);
 
   esp_now_packet_t req_packet = {.type = MSG_TYPE_PAIR};
-  xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
-  esp_now_send(bcast_mac, (uint8_t *)&req_packet, sizeof(req_packet.type));
+  // Il Sensor usa il proprio MAC nel payload o zero, non importa, il Gateway usa src_mac
 
-  // Wait until a MSG_TYPE_PAIR packet is received (from Gateway) or timeout
-  EventBits_t bits =
-      xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_PAIR, pdTRUE,
-                          pdFALSE, pdMS_TO_TICKS(timeout_ms));
+  while (timeout_ms == portMAX_DELAY || elapsed_ms < timeout_ms) {
+    if (elapsed_ms % 5000 == 0) { // Invia il broadcast ogni 5 secondi
+      ESP_LOGI(TAG_HUB_COMM, "Inviando richiesta di pairing al Gateway (Broadcast)...");
+      esp_now_send(bcast_mac, (uint8_t *)&req_packet, sizeof(req_packet));
+    }
+    
+    xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
 
-  esp_now_del_peer(bcast_mac);
+    EventBits_t bits =
+        xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_PAIR, pdTRUE,
+                            pdFALSE, pdMS_TO_TICKS(wait_interval_ms));
 
-  if (bits & EVENT_RECV_PAIR) {
-    // Save the MAC address in a secure way
-    memcpy(s_hub_mac, s_last_recv_mac, ESP_NOW_ETH_ALEN);
-    secure_store_write(NVS_KEY_HUB_MAC, s_hub_mac, ESP_NOW_ETH_ALEN);
+    if (bits & EVENT_RECV_PAIR) {
+      memcpy(s_hub_mac, s_last_recv_mac, ESP_NOW_ETH_ALEN);
+      secure_store_write(NVS_KEY_HUB_MAC, s_hub_mac, ESP_NOW_ETH_ALEN);
 
-    s_is_paired = true;
-    add_hub_peer(s_hub_mac); // Add as an encrypted peer
-    ESP_LOGI(TAG_HUB_COMM, "Pairing avvenuto con successo.");
-    return true;
+      s_is_paired = true;
+      add_hub_peer(s_hub_mac); 
+      
+      esp_now_packet_t ack_packet = {.type = MSG_TYPE_PAIR_ACK};
+      esp_now_send(s_hub_mac, (uint8_t *)&ack_packet, sizeof(ack_packet.type));
+
+      ESP_LOGI(TAG_HUB_COMM, "Pairing avvenuto con successo e ACK inviato in chiaro.");
+
+      // Ora che abbiamo mandato l'ACK, possiamo "promuovere" la connessione con il Gateway a cifrata
+      esp_now_peer_info_t secure_peer = {0};
+      secure_peer.channel = WIFI_CHANNEL;
+      secure_peer.ifidx = WIFI_IF_STA;
+      secure_peer.encrypt = true;
+      memcpy(secure_peer.peer_addr, s_last_recv_mac, 6);
+      memcpy(secure_peer.lmk, s_esp_now_lmk, 16);
+      esp_now_mod_peer(&secure_peer);
+
+      ESP_LOGI(TAG_HUB_COMM, "Gateway registrato come peer cifrato.");
+
+      return true;
+    }
+
+    elapsed_ms += wait_interval_ms;
   }
 
   ESP_LOGE(TAG_HUB_COMM, "Timeout pairing.");
   return false;
 }
+
+
 
 bool hub_comm_send_alarm(uint8_t alarm_code, uint8_t max_retries) {
   if (!s_is_paired)

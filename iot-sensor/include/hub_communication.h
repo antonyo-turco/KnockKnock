@@ -17,7 +17,8 @@ typedef enum {
   MSG_TYPE_PAIR = 0x01,
   MSG_TYPE_ALARM = 0x02,
   MSG_TYPE_INFO_REQ = 0x03,
-  MSG_TYPE_INFO_RESP = 0x04
+  MSG_TYPE_INFO_RESP = 0x04,
+  MSG_TYPE_PAIR_ACK = 0x05
 } msg_type_t;
 
 // Structure for receive information from Hub
@@ -30,15 +31,18 @@ typedef struct {
 
 // Base structure of the packet sent/received (packed to avoid padding)
 typedef struct __attribute__((packed)) {
-  uint8_t type; // Use msg_type_t
+  uint8_t type; /**< One of esp_now_msg_type_t. */
   union {
-    uint8_t alarm_code; // For MSG_TYPE_ALARM
+    uint8_t alarm_code; /**< Payload for MSG_TYPE_ALARM.    */
     struct {
       uint32_t timestamp;
       uint8_t do_ml_training;
       uint32_t ml_duration_ms;
       uint8_t do_reset;
-    } info_resp; // For MSG_TYPE_INFO_RESP
+    } info_resp; /**< Payload for MSG_TYPE_INFO_RESP. */
+    struct {
+      uint8_t target_mac[6];
+    } pair_req;  /**< Payload for MSG_TYPE_PAIR. */
   } payload;
 } esp_now_packet_t;
 

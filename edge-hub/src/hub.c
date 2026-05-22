@@ -159,6 +159,31 @@ static void activate_buzzer(void) {
     gpio_set_level(BUZZER_PIN, 0);
 }
 
+static void hub_publish_device_list_to_cloud(void) {
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "type", "DEVICE_LIST_RESPONSE");
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < s_registry.count; ++i) {
+        cJSON *item = cJSON_CreateObject();
+        char mac_str[18];
+        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_registry.devices[i].mac[0], s_registry.devices[i].mac[1],
+                 s_registry.devices[i].mac[2], s_registry.devices[i].mac[3],
+                 s_registry.devices[i].mac[4], s_registry.devices[i].mac[5]);
+        cJSON_AddStringToObject(item, "mac", mac_str);
+        cJSON_AddStringToObject(item, "name", s_registry.devices[i].name);
+        cJSON_AddBoolToObject(item, "active", s_registry.devices[i].active);
+        cJSON_AddItemToArray(arr, item);
+    }
+    cJSON_AddItemToObject(resp, "devices", arr);
+    char *s = cJSON_PrintUnformatted(resp);
+    if (s) {
+        cloud_publish_response(s);
+        free(s);
+    }
+    cJSON_Delete(resp);
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Serial bridge message handler (Gateway → Hub)                             */
 /* -------------------------------------------------------------------------- */
@@ -174,6 +199,7 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
                  p->sensor_mac[3], p->sensor_mac[4], p->sensor_mac[5]);
 
         hub_register_device(p->sensor_mac, NULL, true);
+        hub_publish_device_list_to_cloud();
 
         sb_info_resp_payload_t resp = {0};
         memcpy(resp.sensor_mac, p->sensor_mac, 6);
@@ -202,6 +228,22 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
         break;
     }
 
+    case GW_TO_HUB_PAIR_SUCCESS: {
+        if (len < sizeof(sb_pair_success_payload_t)) break;
+        const sb_pair_success_payload_t *p = (const sb_pair_success_payload_t *)payload;
+        ESP_LOGI(TAG, "Sensor pairing successful (cloud-initiated) for %02X:%02X:%02X:%02X:%02X:%02X",
+                 p->sensor_mac[0], p->sensor_mac[1], p->sensor_mac[2],
+                 p->sensor_mac[3], p->sensor_mac[4], p->sensor_mac[5]);
+
+        hub_device_t *dev = hub_find_device(p->sensor_mac);
+        if (dev) {
+            dev->active = true;
+            save_registry();
+            hub_publish_device_list_to_cloud();
+        }
+        break;
+    }
+
     case GW_TO_HUB_ALARM: {
         if (len < sizeof(sb_alarm_payload_t)) break;
         const sb_alarm_payload_t *p = (const sb_alarm_payload_t *)payload;
@@ -209,6 +251,15 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
                  p->alarm_code,
                  p->sensor_mac[0], p->sensor_mac[1], p->sensor_mac[2],
                  p->sensor_mac[3], p->sensor_mac[4], p->sensor_mac[5]);
+
+        hub_device_t *dev = hub_find_device(p->sensor_mac);
+        if (dev) {
+            if (!dev->active) {
+                dev->active = true;
+                save_registry();
+                hub_publish_device_list_to_cloud();
+            }
+        }
 
         if (s_alarm_enabled) {
             activate_buzzer();
@@ -224,6 +275,57 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
         const sb_status_payload_t *p = (const sb_status_payload_t *)payload;
         ESP_LOGI(TAG, "Gateway status: uptime %lu s, peers %d",
                  (unsigned long)p->uptime_s, p->num_peers);
+
+        // Risincronizza tutti i peer attivi/registrati al Gateway
+        for (int i = 0; i < s_registry.count; ++i) {
+            sb_add_peer_payload_t add_peer;
+            memcpy(add_peer.sensor_mac, s_registry.devices[i].mac, 6);
+            serial_bridge_send(HUB_TO_GW_ADD_PEER, (const uint8_t *)&add_peer, sizeof(add_peer));
+        }
+        break;
+    }
+
+    case GW_TO_HUB_INFO_REQ: {
+        if (len < sizeof(sb_pair_notif_payload_t)) break;
+        const sb_pair_notif_payload_t *p = (const sb_pair_notif_payload_t *)payload;
+        ESP_LOGI(TAG, "Info request from %02X:%02X:%02X:%02X:%02X:%02X",
+                 p->sensor_mac[0], p->sensor_mac[1], p->sensor_mac[2],
+                 p->sensor_mac[3], p->sensor_mac[4], p->sensor_mac[5]);
+
+        /* Only respond with info — do NOT re-register the device. */
+        hub_device_t *dev = hub_find_device(p->sensor_mac);
+        if (dev) {
+            if (!dev->active) {
+                dev->active = true;
+                save_registry();
+                hub_publish_device_list_to_cloud();
+            }
+        }
+
+        sb_info_resp_payload_t resp = {0};
+        memcpy(resp.sensor_mac, p->sensor_mac, 6);
+
+        struct timeval tv_now;
+        gettimeofday(&tv_now, NULL);
+        resp.timestamp = tv_now.tv_sec;
+        resp.do_reset  = 0;
+
+        /* Deliver pending training command if one was queued via MQTT. */
+        dev = hub_find_device(p->sensor_mac);
+        if (dev && dev->train_pending) {
+            resp.do_ml_training  = 1;
+            resp.ml_duration_ms  = dev->train_duration_ms;
+            dev->train_pending   = false;
+            dev->train_duration_ms = 0;
+            save_registry();
+            ESP_LOGI(TAG, "Delivering pending training command (%lu ms)",
+                     (unsigned long)resp.ml_duration_ms);
+        } else {
+            resp.do_ml_training = 0;
+            resp.ml_duration_ms = 0;
+        }
+
+        serial_bridge_send(HUB_TO_GW_INFO_RESP, (const uint8_t *)&resp, sizeof(resp));
         break;
     }
 
@@ -252,8 +354,21 @@ static void hub_task(void *pvParameters) {
     hub_event_t ev;
     ESP_LOGI(TAG, "Hub task started on Core %d", xPortGetCoreID());
     while (1) {
-        if (xQueueReceive(s_hub_queue, &ev, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(s_hub_queue, &ev, pdMS_TO_TICKS(1000)) == pdTRUE) {
             process_gateway_msg(ev.msg_type, ev.payload, ev.len);
+        } else {
+            // Timeout every 1 second: retry pairing for inactive devices
+            for (int i = 0; i < s_registry.count; ++i) {
+                if (!s_registry.devices[i].active) {
+                    ESP_LOGI(TAG, "Retrying pairing for inactive device %02X:%02X:%02X:%02X:%02X:%02X...",
+                             s_registry.devices[i].mac[0], s_registry.devices[i].mac[1],
+                             s_registry.devices[i].mac[2], s_registry.devices[i].mac[3],
+                             s_registry.devices[i].mac[4], s_registry.devices[i].mac[5]);
+                    sb_start_pairing_payload_t start_pairing;
+                    memcpy(start_pairing.sensor_mac, s_registry.devices[i].mac, 6);
+                    serial_bridge_send(HUB_TO_GW_START_PAIRING, (const uint8_t *)&start_pairing, sizeof(start_pairing));
+                }
+            }
         }
     }
 }
@@ -288,25 +403,7 @@ void hub_handle_mqtt_command(const char *data, int len) {
     /* DEVICE_LIST_REQUEST                                                  */
     /* ------------------------------------------------------------------ */
     if (strcmp(type, "DEVICE_LIST_REQUEST") == 0) {
-        cJSON *resp = cJSON_CreateObject();
-        cJSON_AddStringToObject(resp, "type", "DEVICE_LIST_RESPONSE");
-        cJSON *arr = cJSON_CreateArray();
-        for (int i = 0; i < s_registry.count; ++i) {
-            cJSON *item = cJSON_CreateObject();
-            char mac_str[18];
-            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                     s_registry.devices[i].mac[0], s_registry.devices[i].mac[1],
-                     s_registry.devices[i].mac[2], s_registry.devices[i].mac[3],
-                     s_registry.devices[i].mac[4], s_registry.devices[i].mac[5]);
-            cJSON_AddStringToObject(item, "mac", mac_str);
-            cJSON_AddStringToObject(item, "name", s_registry.devices[i].name);
-            cJSON_AddBoolToObject(item, "active", s_registry.devices[i].active);
-            cJSON_AddItemToArray(arr, item);
-        }
-        cJSON_AddItemToObject(resp, "devices", arr);
-        char *s = cJSON_PrintUnformatted(resp);
-        if (s) { cloud_publish_response(s); free(s); }
-        cJSON_Delete(resp);
+        hub_publish_device_list_to_cloud();
     }
 
     /* ------------------------------------------------------------------ */
@@ -323,7 +420,13 @@ void hub_handle_mqtt_command(const char *data, int len) {
                 if (ok) {
                     const char *name = (name_item && cJSON_IsString(name_item))
                                        ? name_item->valuestring : "";
-                    hub_register_device(mac, name, false);
+                    hub_register_device(mac, name, false); // Register as inactive initially
+                    hub_publish_device_list_to_cloud();
+                    
+                    sb_start_pairing_payload_t start_pairing;
+                    memcpy(start_pairing.sensor_mac, mac, 6);
+                    serial_bridge_send(HUB_TO_GW_START_PAIRING, (const uint8_t *)&start_pairing, sizeof(start_pairing));
+
                     cJSON *ack = cJSON_CreateObject();
                     cJSON_AddStringToObject(ack, "type", "DEVICE_ACK");
                     cJSON_AddStringToObject(ack, "action", "ADD_DEVICE");

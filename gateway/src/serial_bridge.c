@@ -44,7 +44,7 @@
 #include "freertos/task.h"
 
 #define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
-#include "mbedtls/private/gcm.h"
+#include "mbedtls/gcm.h"
 
 #include <string.h>
 #include <stdlib.h>

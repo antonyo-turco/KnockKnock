@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "esp_sntp.h"
 
 static const char *TAG = "CLOUD";
 
@@ -160,6 +161,12 @@ static void smartconfig_task(void * parm) {
             ESP_LOGI(TAG, "Connected to WiFi via saved credentials.");
         }
     }
+
+    // Initialize SNTP for clock synchronization
+    ESP_LOGI(TAG, "Initializing SNTP clock synchronization...");
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
 
     // Now initialize MQTT
     esp_mqtt_client_config_t mqtt_cfg = {

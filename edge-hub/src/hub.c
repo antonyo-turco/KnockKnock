@@ -167,6 +167,9 @@ static void hub_publish_device_list_to_cloud(void) {
     cJSON_AddStringToObject(resp, "type", "DEVICE_LIST_RESPONSE");
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < s_registry.count; ++i) {
+        if (s_registry.devices[i].reset_pending) {
+            continue;
+        }
         cJSON *item = cJSON_CreateObject();
         char mac_str[18];
         snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",

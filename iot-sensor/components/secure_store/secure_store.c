@@ -145,3 +145,19 @@ esp_err_t secure_store_read_string(const char *key, char **str_out) {
 
     return err;
 }
+
+esp_err_t secure_store_erase(const char *key) {
+    if (!key) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs_handle, key);
+        if (err == ESP_OK) {
+            nvs_commit(nvs_handle);
+        }
+        nvs_close(nvs_handle);
+    }
+    return err;
+}
+

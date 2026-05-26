@@ -59,4 +59,12 @@ esp_err_t secure_store_read_string(const char *key, char **str_out);
  */
 void secure_store_deobfuscate(const uint8_t *obfuscated_data, size_t len, uint8_t xor_key, uint8_t *out);
 
+/**
+ * @brief Erase a key securely from NVS.
+ * @param key The NVS key to erase.
+ * @return ESP_OK on success.
+ */
+esp_err_t secure_store_erase(const char *key);
+
 #endif // SECURE_STORE_H
+

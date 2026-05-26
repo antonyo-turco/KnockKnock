@@ -98,12 +98,7 @@ static EventGroupHandle_t s_main_event_group = NULL;
  */
 static void handle_hub_reset(void) {
   ESP_LOGI(TAG, "Hub requested device reset — erasing pairing data.");
-  nvs_handle_t nvs;
-  if (nvs_open("storage", NVS_READWRITE, &nvs) == ESP_OK) {
-    nvs_erase_key(nvs, "hub_mac");
-    nvs_commit(nvs);
-    nvs_close(nvs);
-  }
+  secure_store_erase("hub_mac");
   training_erase_nvs();
   rtc_is_provisioned = false;
   rtc_is_trained = false;

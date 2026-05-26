@@ -102,6 +102,7 @@ esp_err_t espnow_manager_add_peer(const uint8_t *mac);
 esp_err_t espnow_manager_pair_peer(const uint8_t *mac);
 esp_err_t espnow_manager_send_pairing_req(const uint8_t *mac);
 bool espnow_manager_is_pairing_active_for(const uint8_t *mac);
+void espnow_manager_cancel_pairing(const uint8_t *mac);
 
 /**
  * @brief Check whether a MAC is already registered as a peer.

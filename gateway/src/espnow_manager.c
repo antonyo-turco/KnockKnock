@@ -328,6 +328,17 @@ bool espnow_manager_is_pairing_active_for(const uint8_t *mac)
     return s_is_pairing && (memcmp(s_pairing_mac, mac, ESP_NOW_ETH_ALEN) == 0);
 }
 
+void espnow_manager_cancel_pairing(const uint8_t *mac)
+{
+    if (mac == NULL) return;
+    if (s_is_pairing && memcmp(s_pairing_mac, mac, ESP_NOW_ETH_ALEN) == 0) {
+        s_is_pairing = false;
+        memset(s_pairing_mac, 0, ESP_NOW_ETH_ALEN);
+        ESP_LOGI(TAG, "Pairing lock cancelled for %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+}
+
 bool espnow_manager_is_peer(const uint8_t *mac)
 {
     if (mac == NULL) return false;

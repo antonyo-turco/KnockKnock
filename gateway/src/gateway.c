@@ -210,6 +210,7 @@ static void handle_serial_event(const gw_event_t *evt)
 
         const sb_unpair_payload_t *up = (const sb_unpair_payload_t *)evt->payload;
         esp_now_del_peer(up->sensor_mac);
+        espnow_manager_cancel_pairing(up->sensor_mac);
         ESP_LOGI(TAG, "Sensor %02X:%02X:%02X:%02X:%02X:%02X un-paired by Hub.",
                  up->sensor_mac[0], up->sensor_mac[1], up->sensor_mac[2],
                  up->sensor_mac[3], up->sensor_mac[4], up->sensor_mac[5]);

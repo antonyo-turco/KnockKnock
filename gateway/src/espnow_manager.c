@@ -24,6 +24,8 @@ static const char *TAG = "ESPNOW_MGR";
 
 #include "secrets.h"
 
+
+
 /* -------------------------------------------------------------------------- */
 /*  Internal state                                                             */
 /* -------------------------------------------------------------------------- */
@@ -131,67 +133,43 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb)
     /* ------------------------------------------------------------------ */
     /* 2. Initialise Wi-Fi in STA mode                                     */
     /* ------------------------------------------------------------------ */
-    err = esp_netif_init();
-    if (err != ESP_OK) return err;
 
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
 
-    wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&wifi_cfg);
-    if (err != ESP_OK) return err;
-
-    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    if (err != ESP_OK) return err;
-
-    err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err != ESP_OK) return err;
-
-    /* Disable Wi-Fi power save to ensure ESP-NOW packets are received reliably */
-    esp_wifi_set_ps(WIFI_PS_NONE);
-
-    /* Force standard B/G/N protocol to avoid mismatch between different ESP-IDF versions */
-    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
-
-    err = esp_wifi_start();
-    if (err != ESP_OK) return err;
-
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
     #ifdef C3_BUILD
     esp_wifi_set_max_tx_power(34); //34 is equivalent to +20dBm 
     #endif
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE)); // Disabilita power save per evitare problemi di ricezione
+    ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
+
+
+
+    /* Force standard B/G/N protocol to avoid mismatch between different ESP-IDF versions */
+    //esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
 
     /* Force promiscuous mode to lock the channel in STA mode when disconnected */
-    esp_wifi_set_promiscuous(true);
+    //esp_wifi_set_promiscuous(true);
 
-    /* Fix channel – all nodes must operate on the same channel. */
-    err = esp_wifi_set_channel(GATEWAY_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
-    if (err != ESP_OK) return err;
-
-    uint8_t primary_chan = 0;
-    wifi_second_chan_t second_chan;
-    esp_wifi_get_channel(&primary_chan, &second_chan);
 
     /* ------------------------------------------------------------------ */
     /* 3. Initialise ESP-NOW                                               */
     /* ------------------------------------------------------------------ */
-    err = esp_now_init();
+    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(esp_now_register_send_cb(on_data_sent));
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
+
+    //Set the Primary Master Key (PMK) 
+    err = esp_now_set_pmk(s_pmk);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_now_init failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "esp_now_set_pmk failed: %s", esp_err_to_name(err));
         return err;
     }
-
-    err = esp_now_register_send_cb(on_data_sent);
-    if (err != ESP_OK) return err;
-
-    err = esp_now_register_recv_cb(on_data_recv);
-    if (err != ESP_OK) return err;
-
-    /* Set the Primary Master Key (PMK) */
-    // err = esp_now_set_pmk(s_pmk);
-    // if (err != ESP_OK) {
-    //     ESP_LOGE(TAG, "esp_now_set_pmk failed: %s", esp_err_to_name(err));
-    //     return err;
-    // }
 
     /* ------------------------------------------------------------------ */
     /* 4. Add unencrypted broadcast peer for pairing discovery.            */
@@ -218,8 +196,7 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb)
     ESP_LOGI(TAG, "ESP-NOW manager initialised. Local MAC: %02X:%02X:%02X:%02X:%02X:%02X",
              local_mac[0], local_mac[1], local_mac[2],
              local_mac[3], local_mac[4], local_mac[5]);
-    ESP_LOGI(TAG, "Configured channel: %d. Active channel: %d.", 
-             GATEWAY_WIFI_CHANNEL, primary_chan);
+
     return ESP_OK;
 }
 
@@ -343,6 +320,12 @@ esp_err_t espnow_manager_send_pairing_req(const uint8_t *mac)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     return ESP_OK;
+}
+
+bool espnow_manager_is_pairing_active_for(const uint8_t *mac)
+{
+    if (mac == NULL) return false;
+    return s_is_pairing && (memcmp(s_pairing_mac, mac, ESP_NOW_ETH_ALEN) == 0);
 }
 
 bool espnow_manager_is_peer(const uint8_t *mac)

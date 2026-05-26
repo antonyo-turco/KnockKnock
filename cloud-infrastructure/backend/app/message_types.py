@@ -36,6 +36,7 @@ class MessageType(str, Enum):
     ALARM_ACK = "ALARM_ACK"
     START_TRAINING = "START_TRAINING"
     TRAINING_ACK = "TRAINING_ACK"
+    ALARM = "ALARM"
 
 
 # ---------------------------------------------------------------------------

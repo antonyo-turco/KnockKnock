@@ -16,7 +16,7 @@
 static const char *TAG = "HUB";
 
 #define MAX_DEVICES      10
-#define REGISTRY_VERSION 2
+#define REGISTRY_VERSION 3
 
 typedef struct {
     uint8_t  mac[6];
@@ -24,6 +24,7 @@ typedef struct {
     bool     active;
     bool     train_pending;
     uint32_t train_duration_ms;
+    bool     reset_pending;
 } hub_device_t;
 
 typedef struct {
@@ -100,6 +101,7 @@ static void hub_register_device(const uint8_t *mac, const char *name, bool activ
                         sizeof(s_registry.devices[i].name) - 1);
             }
             s_registry.devices[i].active = active;
+            s_registry.devices[i].reset_pending = false;
             save_registry();
             return;
         }
@@ -110,6 +112,7 @@ static void hub_register_device(const uint8_t *mac, const char *name, bool activ
         d->active = active;
         d->train_pending = false;
         d->train_duration_ms = 0;
+        d->reset_pending = false;
         if (name && strlen(name) > 0) {
             strncpy(d->name, name, sizeof(d->name) - 1);
         } else {
@@ -198,33 +201,60 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
                  p->sensor_mac[0], p->sensor_mac[1], p->sensor_mac[2],
                  p->sensor_mac[3], p->sensor_mac[4], p->sensor_mac[5]);
 
-        hub_register_device(p->sensor_mac, NULL, true);
-        hub_publish_device_list_to_cloud();
-
+        hub_device_t *dev = hub_find_device(p->sensor_mac);
+        
         sb_info_resp_payload_t resp = {0};
         memcpy(resp.sensor_mac, p->sensor_mac, 6);
 
         struct timeval tv_now;
         gettimeofday(&tv_now, NULL);
         resp.timestamp = tv_now.tv_sec;
-        resp.do_reset  = 0;
 
-        /* Deliver pending training command if one was queued via MQTT. */
-        hub_device_t *dev = hub_find_device(p->sensor_mac);
-        if (dev && dev->train_pending) {
-            resp.do_ml_training  = 1;
-            resp.ml_duration_ms  = dev->train_duration_ms;
-            dev->train_pending   = false;
-            dev->train_duration_ms = 0;
-            save_registry();
-            ESP_LOGI(TAG, "Delivering pending training command (%lu ms)",
-                     (unsigned long)resp.ml_duration_ms);
-        } else {
+        bool need_unpair = false;
+        if (dev && dev->reset_pending) {
+            resp.do_reset = 1;
+            ESP_LOGW(TAG, "Sensor has pending reset — instructing to reset.");
+            hub_remove_device(p->sensor_mac);
+            
             resp.do_ml_training = 0;
             resp.ml_duration_ms = 0;
+            need_unpair = true;
+        } else if (dev == NULL) {
+            resp.do_reset = 1;
+            ESP_LOGW(TAG, "Sensor not in registry — instructing to reset.");
+            
+            resp.do_ml_training = 0;
+            resp.ml_duration_ms = 0;
+            need_unpair = true;
+        } else {
+            resp.do_reset = 0;
+            dev->active = true;
+            save_registry();
+            hub_publish_device_list_to_cloud();
+
+            /* Deliver pending training command if one was queued via MQTT. */
+            if (dev->train_pending) {
+                resp.do_ml_training  = 1;
+                resp.ml_duration_ms  = dev->train_duration_ms;
+                dev->train_pending   = false;
+                dev->train_duration_ms = 0;
+                save_registry();
+                ESP_LOGI(TAG, "Delivering pending training command (%lu ms)",
+                         (unsigned long)resp.ml_duration_ms);
+            } else {
+                resp.do_ml_training = 0;
+                resp.ml_duration_ms = 0;
+            }
         }
 
         serial_bridge_send(HUB_TO_GW_INFO_RESP, (const uint8_t *)&resp, sizeof(resp));
+
+        if (need_unpair) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            sb_unpair_payload_t unpair;
+            memcpy(unpair.sensor_mac, p->sensor_mac, 6);
+            serial_bridge_send(HUB_TO_GW_UNPAIR, (const uint8_t *)&unpair, sizeof(unpair));
+        }
         break;
     }
 
@@ -254,11 +284,9 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
 
         hub_device_t *dev = hub_find_device(p->sensor_mac);
         if (dev) {
-            if (!dev->active) {
-                dev->active = true;
-                save_registry();
-                hub_publish_device_list_to_cloud();
-            }
+            dev->active = true;
+            save_registry();
+            hub_publish_device_list_to_cloud();
         }
 
         if (s_alarm_enabled) {
@@ -292,15 +320,7 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
                  p->sensor_mac[0], p->sensor_mac[1], p->sensor_mac[2],
                  p->sensor_mac[3], p->sensor_mac[4], p->sensor_mac[5]);
 
-        /* Only respond with info — do NOT re-register the device. */
         hub_device_t *dev = hub_find_device(p->sensor_mac);
-        if (dev) {
-            if (!dev->active) {
-                dev->active = true;
-                save_registry();
-                hub_publish_device_list_to_cloud();
-            }
-        }
 
         sb_info_resp_payload_t resp = {0};
         memcpy(resp.sensor_mac, p->sensor_mac, 6);
@@ -308,24 +328,52 @@ static void process_gateway_msg(uint8_t msg_type, const uint8_t *payload, size_t
         struct timeval tv_now;
         gettimeofday(&tv_now, NULL);
         resp.timestamp = tv_now.tv_sec;
-        resp.do_reset  = 0;
 
-        /* Deliver pending training command if one was queued via MQTT. */
-        dev = hub_find_device(p->sensor_mac);
-        if (dev && dev->train_pending) {
-            resp.do_ml_training  = 1;
-            resp.ml_duration_ms  = dev->train_duration_ms;
-            dev->train_pending   = false;
-            dev->train_duration_ms = 0;
-            save_registry();
-            ESP_LOGI(TAG, "Delivering pending training command (%lu ms)",
-                     (unsigned long)resp.ml_duration_ms);
-        } else {
+        bool need_unpair = false;
+        if (dev && dev->reset_pending) {
+            resp.do_reset = 1;
+            ESP_LOGW(TAG, "Sensor has pending reset — instructing to reset.");
+            hub_remove_device(p->sensor_mac);
+
             resp.do_ml_training = 0;
             resp.ml_duration_ms = 0;
+            need_unpair = true;
+        } else if (dev == NULL) {
+            resp.do_reset = 1;
+            ESP_LOGW(TAG, "Sensor not in registry — instructing to reset.");
+
+            resp.do_ml_training = 0;
+            resp.ml_duration_ms = 0;
+            need_unpair = true;
+        } else {
+            resp.do_reset = 0;
+            dev->active = true;
+            save_registry();
+            hub_publish_device_list_to_cloud();
+
+            /* Deliver pending training command if one was queued via MQTT. */
+            if (dev->train_pending) {
+                resp.do_ml_training  = 1;
+                resp.ml_duration_ms  = dev->train_duration_ms;
+                dev->train_pending   = false;
+                dev->train_duration_ms = 0;
+                save_registry();
+                ESP_LOGI(TAG, "Delivering pending training command (%lu ms)",
+                         (unsigned long)resp.ml_duration_ms);
+            } else {
+                resp.do_ml_training = 0;
+                resp.ml_duration_ms = 0;
+            }
         }
 
         serial_bridge_send(HUB_TO_GW_INFO_RESP, (const uint8_t *)&resp, sizeof(resp));
+
+        if (need_unpair) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            sb_unpair_payload_t unpair;
+            memcpy(unpair.sensor_mac, p->sensor_mac, 6);
+            serial_bridge_send(HUB_TO_GW_UNPAIR, (const uint8_t *)&unpair, sizeof(unpair));
+        }
         break;
     }
 
@@ -452,23 +500,26 @@ void hub_handle_mqtt_command(const char *data, int len) {
                 uint8_t mac[6];
                 bool ok = parse_mac_address(mac_item->valuestring, mac);
                 if (ok) {
-                    bool removed = hub_remove_device(mac);
-                    if (removed) {
-                        sb_unpair_payload_t unpair;
-                        memcpy(unpair.sensor_mac, mac, 6);
-                        serial_bridge_send(HUB_TO_GW_UNPAIR,
-                                           (const uint8_t *)&unpair, sizeof(unpair));
+                    hub_device_t *dev = hub_find_device(mac);
+                    bool success = false;
+                    if (dev) {
+                        dev->reset_pending = true;
+                        save_registry();
+                        success = true;
                     }
                     cJSON *ack = cJSON_CreateObject();
                     cJSON_AddStringToObject(ack, "type", "DEVICE_ACK");
                     cJSON_AddStringToObject(ack, "action", "REMOVE_DEVICE");
                     cJSON_AddStringToObject(ack, "mac", mac_item->valuestring);
-                    cJSON_AddBoolToObject(ack, "success", removed);
+                    cJSON_AddBoolToObject(ack, "success", success);
                     cJSON_AddStringToObject(ack, "message",
-                        removed ? "Device removed." : "Device not found.");
+                        success ? "Device scheduled for reset and deletion." : "Device not found.");
                     char *s = cJSON_PrintUnformatted(ack);
                     if (s) { cloud_publish_response(s); free(s); }
                     cJSON_Delete(ack);
+
+                    // Immediately notify the cloud of the updated status (it will show offline/pending)
+                    hub_publish_device_list_to_cloud();
                 }
             }
         }

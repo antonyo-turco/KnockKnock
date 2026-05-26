@@ -11,10 +11,12 @@ Bridges MQTT ↔ REST/SSE so a web app can:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -67,6 +69,7 @@ _mqtt_client: Optional[mqtt.Client] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _sse_queues: list[asyncio.Queue] = []
 _alarm_enabled: bool = True  # best-known state, updated via ALARM_ACK
+alarm_history: list[dict] = []  # recent alarms history
 
 # ---------------------------------------------------------------------------
 # SSE broadcast (called on asyncio thread via call_soon_threadsafe)
@@ -90,6 +93,12 @@ def _on_connect(
         client.subscribe(TOPIC_RESPONSE, qos=1)
         client.subscribe(TOPIC_STATUS, qos=1)
         logger.info("MQTT connected, subscribed to response + status topics")
+        # Request live device list from Edge Hub automatically on startup
+        sync_msg = build_device_list_request_message()
+        topic = TOPIC_COMMAND.format(edge_id=DEFAULT_EDGE)
+        payload = serialize_message(sync_msg)
+        client.publish(topic, payload, qos=1)
+        logger.info("Startup sync command published to topic: %s", topic)
     else:
         logger.error("MQTT connect failed rc=%s", reason_code)
 
@@ -117,6 +126,19 @@ def _on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:
     elif message.type == MessageType.ALARM_ACK:
         global _alarm_enabled
         _alarm_enabled = bool(message.payload.get("alarm_enabled", True))
+    elif message.type == MessageType.ALARM:
+        mac = message.payload.get("mac_address") or message.payload.get("mac", "")
+        alarm_code = message.payload.get("alarm", 0)
+        logger.warning("ALARM received: sensor %s code %s", mac, alarm_code)
+        if mac:
+            device_manager.update_device_status(mac, "online")
+        alarm_history.append({
+            "mac_address": mac,
+            "alarm_code": alarm_code,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        if len(alarm_history) > 100:
+            alarm_history.pop(0)
 
 
 # ---------------------------------------------------------------------------
@@ -236,13 +258,21 @@ async def alarm_state():
 
 @app.post("/api/alarm/enable")
 async def alarm_enable():
+    global _alarm_enabled
+    _alarm_enabled = True
     _publish(Message(type=MessageType.ALARM_ENABLE))
+    # Optimistically broadcast the state change immediately to all SSE clients for instant UI toggle response
+    _broadcast(json.dumps({"type": "ALARM_ACK", "alarm_enabled": True}))
     return {"ok": True}
 
 
 @app.post("/api/alarm/disable")
 async def alarm_disable():
+    global _alarm_enabled
+    _alarm_enabled = False
     _publish(Message(type=MessageType.ALARM_DISABLE))
+    # Optimistically broadcast the state change immediately to all SSE clients for instant UI toggle response
+    _broadcast(json.dumps({"type": "ALARM_ACK", "alarm_enabled": False}))
     return {"ok": True}
 
 
@@ -330,6 +360,27 @@ async def sync_devices():
     """Request the live device list from the edge hub."""
     _publish(build_device_list_request_message())
     return {"ok": True}
+
+
+@app.get("/api/alarms/recent")
+async def get_recent_alarms(since: Optional[str] = None):
+    """
+    Get recent alarms.
+    Can pass a 'since' query parameter (ISO-8601 string) to filter alarms since that time.
+    Excellent for Android background service polling!
+    """
+    if not since:
+        return {"alarms": alarm_history}
+    
+    try:
+        since_dt = datetime.fromisoformat(since)
+        filtered = [
+            a for a in alarm_history 
+            if datetime.fromisoformat(a["timestamp"]) > since_dt
+        ]
+        return {"alarms": filtered}
+    except Exception:
+        return {"alarms": alarm_history}
 
 
 # Static files — must be mounted last so /api/ routes take priority.

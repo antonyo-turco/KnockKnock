@@ -184,7 +184,7 @@ esp_err_t cloud_publish_alarm(const uint8_t *mac, uint8_t alarm_code) {
     if (!s_mqtt_client) return ESP_FAIL;
     
     char payload[128];
-    snprintf(payload, sizeof(payload), "{\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\", \"alarm\":%d}",
+    snprintf(payload, sizeof(payload), "{\"type\":\"ALARM\", \"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\", \"alarm\":%d}",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], alarm_code);
              
     int msg_id = esp_mqtt_client_publish(s_mqtt_client, CLOUD_MQTT_TOPIC_STATUS, payload, 0, 1, 0);

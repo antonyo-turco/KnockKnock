@@ -84,6 +84,13 @@ static void handle_espnow_event(const gw_event_t *evt)
         ESP_LOGI(TAG, "Received MSG_TYPE_PAIR from %02X:%02X:%02X:%02X:%02X:%02X",
                  evt->src_mac[0], evt->src_mac[1], evt->src_mac[2],
                  evt->src_mac[3], evt->src_mac[4], evt->src_mac[5]);
+                 
+        /* ONLY accept the pairing if the MAC has been requested from the cloud! */
+        if (!espnow_manager_is_pairing_active_for(evt->src_mac)) {
+            ESP_LOGW(TAG, "Pairing request rejected: pairing not active for this MAC.");
+            break;
+        }
+
         /* Accept the sensor as a new encrypted peer. */
         esp_err_t err = espnow_manager_pair_peer(evt->src_mac);
         if (err != ESP_OK) {

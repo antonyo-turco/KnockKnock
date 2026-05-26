@@ -359,43 +359,34 @@ static void ml_processor_task(void *arg) {
   struct timeval tv_now;
   gettimeofday(&tv_now, NULL);
 
-  if (is_baseline) {
-    // ── Adaptive threshold logic ──────────────────────────────────────────
-    int64_t delta_sec =
-        (rtc_last_sensor_wakeup_sec > 0)
-            ? (tv_now.tv_sec - rtc_last_sensor_wakeup_sec)
-            : (THRESHOLD_ADJUST_TIME_SEC + 1); // treat as "ok" on first event
+  int64_t delta_sec =
+      (rtc_last_sensor_wakeup_sec > 0)
+          ? (tv_now.tv_sec - rtc_last_sensor_wakeup_sec)
+          : (THRESHOLD_ADJUST_TIME_SEC + 1); // treat as "ok" on first event
 
-    if (delta_sec < THRESHOLD_ADJUST_TIME_SEC) {
-      // Waking up too frequently — raise threshold to reduce false wakes
-      rtc_threshold_mg = (uint16_t)(rtc_threshold_mg + THRESHOLD_STEP_UP);
-      if (rtc_threshold_mg > THRESHOLD_MG_MAX) {
-        rtc_threshold_mg = THRESHOLD_MG_MAX;
-      }
-      ESP_LOGI(TAG, "[THRESHOLD] Too frequent (delta=%llds). Raised to %u mg.",
-               (long long)delta_sec, rtc_threshold_mg);
-    } else {
-      // Normal timing — gently lower threshold to stay responsive
-      if (rtc_threshold_mg > THRESHOLD_STEP_DOWN + THRESHOLD_MG_MIN) {
-        rtc_threshold_mg = (uint16_t)(rtc_threshold_mg - THRESHOLD_STEP_DOWN);
-      } else {
-        rtc_threshold_mg = THRESHOLD_MG_MIN;
-      }
-      ESP_LOGI(TAG,
-               "[THRESHOLD] Normal timing (delta=%llds). Lowered to %u mg.",
-               (long long)delta_sec, rtc_threshold_mg);
+  if (delta_sec < THRESHOLD_ADJUST_TIME_SEC) {
+    // Waking up too frequently — raise threshold to reduce false wakes
+    rtc_threshold_mg = (uint16_t)(rtc_threshold_mg + THRESHOLD_STEP_UP);
+    if (rtc_threshold_mg > THRESHOLD_MG_MAX) {
+      rtc_threshold_mg = THRESHOLD_MG_MAX;
     }
-
-    // Remember when this sensor event happened
-    rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
-
+    ESP_LOGW(TAG, "[THRESHOLD] Waking up too frequently (delta=%llds). Raised threshold to %u mg.",
+             (long long)delta_sec, rtc_threshold_mg);
   } else {
+    ESP_LOGI(TAG, "[THRESHOLD] Normal timing (delta=%llds). Threshold kept at %u mg.",
+             (long long)delta_sec, rtc_threshold_mg);
+  }
+
+  // Remember when this wakeup happened (on every sensor event)
+  rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
+
+  if (!is_baseline) {
     // ── ANOMALY: send alarm and resync ────────────────────────────────────
     ESP_LOGW(TAG, "[ML] DEVIATION detected — sending alarm to hub.");
 
     ESP_ERROR_CHECK(hub_comm_init());
 
-    hub_comm_send_alarm(1 /* alarm_code */, 3 /* max_retries */);
+    hub_comm_send_alarm(1 /* alarm_code */, 5 /* max_retries */);
 
     hub_info_t info;
     if (hub_comm_get_information(&info, 5000, 3)) {
@@ -416,6 +407,8 @@ static void ml_processor_task(void *arg) {
           TAG,
           "[ML] Hub unreachable after alarm. Continuing with existing model.");
     }
+  }else {
+    ESP_LOGI(TAG, "[ML] Baseline activity — no alarm sent.");
   }
 
   goto_deep_sleep();
@@ -502,11 +495,7 @@ void app_main(void) {
 
     // ── Print MAC Address ─────────────────────────────────────────────────────
     uint8_t base_mac[6];
-#ifndef C3_BUILD
     if (esp_wifi_get_mac(WIFI_IF_STA, base_mac) == ESP_OK) {
-#else
-    if (esp_wifi_get_mac(WIFI_IF_AP, base_mac) == ESP_OK) {
-#endif
       ESP_LOGI(TAG, "========================================");
       ESP_LOGI(TAG, " SENSOR MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X",
                base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
@@ -623,6 +612,15 @@ void app_main(void) {
   // ═════════════════════════════════════════════════════════════════════════
   else { // wakeup == ESP_SLEEP_WAKEUP_TIMER
     ESP_LOGI(TAG, "=== 24-H HUB SYNC ===");
+
+    // Gently lower threshold during timer sync (proves environment has been quiet)
+    if (rtc_threshold_mg > THRESHOLD_STEP_DOWN + THRESHOLD_MG_MIN) {
+      rtc_threshold_mg = (uint16_t)(rtc_threshold_mg - THRESHOLD_STEP_DOWN);
+    } else {
+      rtc_threshold_mg = THRESHOLD_MG_MIN;
+    }
+    ESP_LOGI(TAG, "[THRESHOLD] 24-h sync quiet period. Gently lowered threshold to %u mg.",
+             rtc_threshold_mg);
 
     ESP_ERROR_CHECK(hub_comm_init());
 

@@ -50,7 +50,7 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 /// ─────────────────────────────────────────────────────────────────────────────
 #define THRESHOLD_MG 150     /* 0.150g — good for table knocks            */
 #define THRESHOLD_MG_MIN 120  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 250 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG_MAX 190 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Adaptive threshold tuning

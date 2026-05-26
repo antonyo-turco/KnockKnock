@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
+#include "esp_idf_version.h"
 #include <string.h>
 
 static const char *TAG = "ESPNOW_MGR";
@@ -72,10 +73,10 @@ static void load_or_create_key(const char *nvs_key,
 /**
  * @brief Send-done callback – keep it minimal.
  */
-static void on_data_sent(const esp_now_send_info_t *tx_info,
+static void on_data_sent(const uint8_t *mac_addr,
                          esp_now_send_status_t status)
 {
-    (void)tx_info;
+    (void)mac_addr;
     if (status == ESP_NOW_SEND_SUCCESS) {
         xEventGroupSetBits(s_send_event_group, SEND_ACK_OK);
     } else {
@@ -155,6 +156,10 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb)
     err = esp_wifi_start();
     if (err != ESP_OK) return err;
 
+    #ifdef C3_BUILD
+    esp_wifi_set_max_tx_power(34); //34 is equivalent to +20dBm 
+    #endif
+
     /* Force promiscuous mode to lock the channel in STA mode when disconnected */
     esp_wifi_set_promiscuous(true);
 
@@ -196,7 +201,7 @@ esp_err_t espnow_manager_init(espnow_recv_cb_t recv_cb)
     {
         esp_now_peer_info_t bcast_peer = {0};
         bcast_peer.channel = GATEWAY_WIFI_CHANNEL;
-        bcast_peer.ifidx   = WIFI_IF_AP;
+        bcast_peer.ifidx   = WIFI_IF_STA;
         bcast_peer.encrypt = false;
         memset(bcast_peer.peer_addr, 0xFF, ESP_NOW_ETH_ALEN);
         err = esp_now_add_peer(&bcast_peer);

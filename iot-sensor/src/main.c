@@ -502,7 +502,11 @@ void app_main(void) {
 
     // ── Print MAC Address ─────────────────────────────────────────────────────
     uint8_t base_mac[6];
+#ifndef C3_BUILD
     if (esp_wifi_get_mac(WIFI_IF_STA, base_mac) == ESP_OK) {
+#else
+    if (esp_wifi_get_mac(WIFI_IF_AP, base_mac) == ESP_OK) {
+#endif
       ESP_LOGI(TAG, "========================================");
       ESP_LOGI(TAG, " SENSOR MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X",
                base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);

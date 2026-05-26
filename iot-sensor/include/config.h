@@ -48,9 +48,9 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG 100     /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN 50  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 150 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 150     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 120  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 250 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Adaptive threshold tuning
@@ -58,7 +58,7 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  (= too often) → raise threshold by THRESHOLD_STEP_UP.
 ///  Otherwise → lower it by THRESHOLD_STEP_DOWN (back to baseline sensitivity).
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_ADJUST_TIME_SEC 30 /* window for "waking too often" check */
+#define THRESHOLD_ADJUST_TIME_SEC 60 /* window for "waking too often" check */
 #define THRESHOLD_STEP_UP 10         /* mg to raise when too frequent       */
 #define THRESHOLD_STEP_DOWN 5        /* mg to lower when timing is normal   */
 

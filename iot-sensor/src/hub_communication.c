@@ -1,4 +1,5 @@
 #include "hub_communication.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
@@ -35,7 +36,7 @@ static EventGroupHandle_t s_espnow_event_group;
 static esp_now_packet_t s_last_recv_packet;
 static uint8_t s_last_recv_mac[ESP_NOW_ETH_ALEN];
 
-// Callbacks of ESP-NOW (Updated for ESP-IDF v5+)
+// Callbacks of ESP-NOW (Conditional signature for ESP-IDF versions)
 
 static void on_data_sent(const uint8_t *mac_addr,
                          esp_now_send_status_t status) {
@@ -46,15 +47,18 @@ static void on_data_sent(const uint8_t *mac_addr,
   }
 }
 
-// In ESP-IDF v5, the first argument is no longer a pointer to the MAC, but a
-// struct "esp_now_recv_info_t"
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
                          const uint8_t *data, int len) {
   if (len < sizeof(uint8_t))
     return; // Packet too small
-
-  // Get the MAC address from the new struct
   const uint8_t *mac_addr = esp_now_info->src_addr;
+#else
+static void on_data_recv(const uint8_t *mac_addr,
+                         const uint8_t *data, int len) {
+  if (len < sizeof(uint8_t))
+    return; // Packet too small
+#endif
 
   esp_now_packet_t *packet = (esp_now_packet_t *)data;
 
@@ -68,7 +72,9 @@ static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
     ESP_LOGI(TAG_HUB_COMM, "Ricevuto PAIR ACK dal Gateway %02X:%02X:%02X:%02X:%02X:%02X",
              mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
 
-    // Check if the ACK contains our MAC in the payload to ensure it's meant for us
+    // Check if the ACK contains our MAC in the payload to ensure it's meant for us.
+    // IMPORTANT: Always use WIFI_IF_STA — this is the MAC address the gateway sees
+    // as src_addr when we send broadcasts, regardless of APSTA mode on C3.
     uint8_t my_mac[6];
     esp_wifi_get_mac(WIFI_IF_STA, my_mac);
     
@@ -77,7 +83,11 @@ static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
       
       esp_now_peer_info_t gw_peer = {0};
       gw_peer.channel = WIFI_CHANNEL;
+#ifndef C3_BUILD
       gw_peer.ifidx = WIFI_IF_STA;
+#else
+      gw_peer.ifidx = WIFI_IF_AP;
+#endif
       gw_peer.encrypt = false;
       memcpy(gw_peer.peer_addr, mac_addr, 6);
       if (esp_now_is_peer_exist(mac_addr)) esp_now_mod_peer(&gw_peer);
@@ -97,7 +107,11 @@ static void on_data_recv(const esp_now_recv_info_t *esp_now_info,
 static void add_hub_peer(const uint8_t *mac) {
   esp_now_peer_info_t peer_info = {};
   peer_info.channel = WIFI_CHANNEL;
+#ifndef C3_BUILD
   peer_info.ifidx = WIFI_IF_STA;
+#else
+  peer_info.ifidx = WIFI_IF_AP;
+#endif
   peer_info.encrypt = true;
   memcpy(peer_info.peer_addr, mac, ESP_NOW_ETH_ALEN);
   memcpy(peer_info.lmk, s_esp_now_lmk, 16);
@@ -110,6 +124,13 @@ static void add_hub_peer(const uint8_t *mac) {
 // --- PUBLIC API IMPLEMENTATION ---
 
 esp_err_t hub_comm_init(void) {
+  // Guard against double-init: PATH B calls this for clock sync, then
+  // again from ml_processor_task if a DEVIATION triggers an alarm.
+  static bool s_initialized = false;
+  if (s_initialized) {
+    return ESP_OK;
+  }
+
   s_espnow_event_group = xEventGroupCreate();
 
   // 1. Initialize NVS in a secure way
@@ -142,16 +163,31 @@ esp_err_t hub_comm_init(void) {
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+#ifndef C3_BUILD
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+#else
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+#endif
   
   // Disabilita il risparmio energetico Wi-Fi per evitare di perdere pacchetti ESP-NOW
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
+#ifndef C3_BUILD
   // Forza il protocollo standard B/G/N per evitare mismatch tra versioni diverse di ESP-IDF
   ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+#else
+  ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+#endif
 
   ESP_ERROR_CHECK(esp_wifi_start());
+  
+#ifdef C3_BUILD
+  esp_wifi_set_max_tx_power(34); // 34 is equivalent to +20dBm
+#endif
+
+#ifndef C3_BUILD
   ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
+#endif
 
   // Set the Wi-Fi channel (essential for ESP-NOW)
   ESP_ERROR_CHECK(esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE));
@@ -172,10 +208,25 @@ esp_err_t hub_comm_init(void) {
   memset(bcast_peer.peer_addr, 0xFF, ESP_NOW_ETH_ALEN);
   esp_err_t add_err = esp_now_add_peer(&bcast_peer);
   if (add_err != ESP_OK && add_err != ESP_ERR_ESPNOW_EXIST) {
-      ESP_LOGW(TAG_HUB_COMM, "Failed to add broadcast peer: %s", esp_err_to_name(add_err));
+      ESP_LOGW(TAG_HUB_COMM, "Failed to add STA broadcast peer: %s", esp_err_to_name(add_err));
   } else {
-      ESP_LOGI(TAG_HUB_COMM, "Broadcast peer registered (unencrypted).");
+      ESP_LOGI(TAG_HUB_COMM, "STA Broadcast peer registered (unencrypted).");
   }
+
+#ifdef C3_BUILD
+  // Also add broadcast peer on AP interface for sending compatibility under C3_BUILD
+  esp_now_peer_info_t bcast_peer_ap = {0};
+  bcast_peer_ap.channel = WIFI_CHANNEL;
+  bcast_peer_ap.ifidx = WIFI_IF_AP;
+  bcast_peer_ap.encrypt = false;
+  memset(bcast_peer_ap.peer_addr, 0xFF, ESP_NOW_ETH_ALEN);
+  add_err = esp_now_add_peer(&bcast_peer_ap);
+  if (add_err != ESP_OK && add_err != ESP_ERR_ESPNOW_EXIST) {
+      ESP_LOGW(TAG_HUB_COMM, "Failed to add AP broadcast peer: %s", esp_err_to_name(add_err));
+  } else {
+      ESP_LOGI(TAG_HUB_COMM, "AP Broadcast peer registered (unencrypted) for C3 sending.");
+  }
+#endif
 
   // 4. Load the MAC from NVS
   uint8_t *mac_data = NULL;
@@ -193,6 +244,7 @@ esp_err_t hub_comm_init(void) {
   if (mac_data)
     free(mac_data);
 
+  s_initialized = true;
   return ESP_OK;
 }
 
@@ -211,12 +263,14 @@ bool hub_comm_pair(uint32_t timeout_ms) {
   // Il Sensor usa il proprio MAC nel payload o zero, non importa, il Gateway usa src_mac
 
   while (timeout_ms == portMAX_DELAY || elapsed_ms < timeout_ms) {
+    // Clear BEFORE sending so we don't wipe out a legitimately-set bit
+    // that arrives between esp_now_send and the wait.
+    xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
+
     if (elapsed_ms % 5000 == 0) { // Invia il broadcast ogni 5 secondi
       ESP_LOGI(TAG_HUB_COMM, "Inviando richiesta di pairing al Gateway (Broadcast)...");
       esp_now_send(bcast_mac, (uint8_t *)&req_packet, sizeof(req_packet));
     }
-    
-    xEventGroupClearBits(s_espnow_event_group, EVENT_RECV_PAIR);
 
     EventBits_t bits =
         xEventGroupWaitBits(s_espnow_event_group, EVENT_RECV_PAIR, pdTRUE,
@@ -237,7 +291,11 @@ bool hub_comm_pair(uint32_t timeout_ms) {
       // Ora che abbiamo mandato l'ACK, possiamo "promuovere" la connessione con il Gateway a cifrata
       esp_now_peer_info_t secure_peer = {0};
       secure_peer.channel = WIFI_CHANNEL;
+#ifndef C3_BUILD
       secure_peer.ifidx = WIFI_IF_STA;
+#else
+      secure_peer.ifidx = WIFI_IF_AP;
+#endif
       secure_peer.encrypt = true;
       memcpy(secure_peer.peer_addr, s_last_recv_mac, 6);
       memcpy(secure_peer.lmk, s_esp_now_lmk, 16);

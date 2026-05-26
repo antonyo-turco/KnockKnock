@@ -43,8 +43,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#if __has_include("mbedtls/private/gcm.h")
 #define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
 #include "mbedtls/private/gcm.h"
+#else
+#include "mbedtls/gcm.h"
+#endif
 
 #include <string.h>
 #include <stdlib.h>

@@ -12,7 +12,7 @@
 #define KMEANS_K        10
 
 // 47 features — see feature_extraction.h for full index map
-#define FEATURE_DIM     47
+#define FEATURE_DIM     51
 
 // Threshold = max(mean_dist + SIGMA_MULT * sigma, dist_max * MAX_DIST_MARGIN)
 #define SIGMA_MULT      3.0f

@@ -30,35 +30,66 @@ static void welford_update(float *mean, float *M2, uint32_t n, float x) {
 
 static void features_to_raw(const InferenceFeatures *f,
                             float out[FEATURE_DIM]) {
+  // Index mapping for FEATURE_DIM = 51:
+  // [0]     impact_score
+  // [1-4]   p99 (m,x,y,z)
+  // [5-8]   jerk_max (m,x,y,z)
+  // [9-12]  band_20_40 (m,x,y,z)
+  // [13-16] band_40_100 (m,x,y,z)  ← NEW
+  // [17-20] band_1_5 (m,x,y,z)
+  // [21-24] band_5_20 (m,x,y,z)
+  // [25-27] zcr (x,y,z)
+  // [28-34] x_top7_freq[0..6]
+  // [35-41] y_top7_freq[0..6]
+  // [42-48] z_top7_freq[0..6]
+  // [49]    time_sin
+  // [50]    time_cos
+
   out[0] = f->impact_score;
+  
   out[1] = f->m_p99;
   out[2] = f->x_p99;
   out[3] = f->y_p99;
   out[4] = f->z_p99;
+  
   out[5] = f->m_jerk_max;
   out[6] = f->x_jerk_max;
   out[7] = f->y_jerk_max;
   out[8] = f->z_jerk_max;
+  
   out[9] = f->m_band_20_40;
   out[10] = f->x_band_20_40;
   out[11] = f->y_band_20_40;
   out[12] = f->z_band_20_40;
-  out[13] = f->m_band_1_5;
-  out[14] = f->x_band_1_5;
-  out[15] = f->y_band_1_5;
-  out[16] = f->z_band_1_5;
-  out[17] = f->m_band_5_20;
-  out[18] = f->x_band_5_20;
-  out[19] = f->y_band_5_20;
-  out[20] = f->z_band_5_20;
-  out[21] = f->x_zcr;
-  out[22] = f->y_zcr;
-  out[23] = f->z_zcr;
+  
+  out[13] = f->m_band_40_100;
+  out[14] = f->x_band_40_100;
+  out[15] = f->y_band_40_100;
+  out[16] = f->z_band_40_100;
+  
+  out[17] = f->m_band_1_5;
+  out[18] = f->x_band_1_5;
+  out[19] = f->y_band_1_5;
+  out[20] = f->z_band_1_5;
+  
+  out[21] = f->m_band_5_20;
+  out[22] = f->x_band_5_20;
+  out[23] = f->y_band_5_20;
+  out[24] = f->z_band_5_20;
+  
+  out[25] = f->x_zcr;
+  out[26] = f->y_zcr;
+  out[27] = f->z_zcr;
+  
   for (int i = 0; i < TOP7_COUNT; ++i) {
-    out[24 + i] = f->x_top7_freq[i];
-    out[31 + i] = f->y_top7_freq[i];
-    out[38 + i] = f->z_top7_freq[i];
+    out[28 + i] = f->x_top7_freq[i];
+    out[35 + i] = f->y_top7_freq[i];
+    out[42 + i] = f->z_top7_freq[i];
   }
+  
+  out[49] = f->time_sin;
+  out[50] = f->time_cos;
+}
   out[45] = f->time_sin;
   out[46] = f->time_cos;
 }

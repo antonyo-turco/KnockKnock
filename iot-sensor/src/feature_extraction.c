@@ -20,7 +20,7 @@ static float safe_float(float v) {
 }
 
 // 99th percentile of |values[0..size-1]|.
-// Uses insertion sort on a static buffer — O(n²), fine for n=256.
+// Uses insertion sort on a static buffer — O(n²), fine for n=512.
 static float percentile_99(const float values[], int size) {
     if (size <= 0) return 0.0f;
     static float sorted[SAMPLE_COUNT];
@@ -113,14 +113,14 @@ static void top7_frequencies(const float magnitudes[], int n_bins,
 //  Computes all FFT-based and time-domain metrics for one signal vector of
 //  exactly SAMPLE_COUNT == FFT_SIZE elements (no zero-padding).
 //
-//  Outputs: p99, jerk_max, band_1_5, band_5_20, band_20_40, top7_freq[7]
+//  Outputs: p99, jerk_max, band_1_5, band_5_20, band_20_40, band_40_100, top7_freq[7]
 //  ZCR is computed separately (time-domain only, no FFT needed).
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void compute_signal_metrics(
     const float signal[], int size, float sampling_rate_hz,
     float *p99_out, float *jerk_max_out,
-    float *band_1_5_out, float *band_5_20_out, float *band_20_40_out,
+    float *band_1_5_out, float *band_5_20_out, float *band_20_40_out, float *band_40_100_out,
     float top7_freq_out[TOP7_COUNT])
     {
     // ── Time-domain metrics ──────────────────────────────────────────────────
@@ -163,9 +163,10 @@ static void compute_signal_metrics(
     
     // ── Estrazione Feature in Frequenza ─────────────────────────────────────
     // Ora passiamo l'array vMag che contiene i valori calcolati dall'acceleratore
-    *band_1_5_out   = bandpower(freqs, vMag, n_bins,  1.0f,  5.0f);
-    *band_5_20_out  = bandpower(freqs, vMag, n_bins,  5.0f, 20.0f);
-    *band_20_40_out = bandpower(freqs, vMag, n_bins, 20.0f, 40.0f);
+    *band_1_5_out   = bandpower(freqs, vMag, n_bins,  1.0f,   5.0f);
+    *band_5_20_out  = bandpower(freqs, vMag, n_bins,  5.0f,  20.0f);
+    *band_20_40_out = bandpower(freqs, vMag, n_bins, 20.0f,  40.0f);
+    *band_40_100_out = bandpower(freqs, vMag, n_bins, 40.0f, 100.0f);
 
     top7_frequencies(vMag, n_bins, sampling_rate_hz, top7_freq_out);
     }
@@ -230,15 +231,15 @@ InferenceFeatures compute_features(
         if (j > m_jerk_max) m_jerk_max = j;
     }
 
-    float m_p99, m_jerk, m_b15, m_b520, m_b2040; float m_top7[TOP7_COUNT];
-    float x_p99, x_jerk, x_b15, x_b520, x_b2040; float x_top7[TOP7_COUNT];
-    float y_p99, y_jerk, y_b15, y_b520, y_b2040; float y_top7[TOP7_COUNT];
-    float z_p99, z_jerk, z_b15, z_b520, z_b2040; float z_top7[TOP7_COUNT];
+    float m_p99, m_jerk, m_b15, m_b520, m_b2040, m_b40100; float m_top7[TOP7_COUNT];
+    float x_p99, x_jerk, x_b15, x_b520, x_b2040, x_b40100; float x_top7[TOP7_COUNT];
+    float y_p99, y_jerk, y_b15, y_b520, y_b2040, y_b40100; float y_top7[TOP7_COUNT];
+    float z_p99, z_jerk, z_b15, z_b520, z_b2040, z_b40100; float z_top7[TOP7_COUNT];
 
-    compute_signal_metrics(mag_m, size, sampling_rate_hz, &m_p99, &m_jerk, &m_b15, &m_b520, &m_b2040, m_top7);
-    compute_signal_metrics(mag_x, size, sampling_rate_hz, &x_p99, &x_jerk, &x_b15, &x_b520, &x_b2040, x_top7);
-    compute_signal_metrics(mag_y, size, sampling_rate_hz, &y_p99, &y_jerk, &y_b15, &y_b520, &y_b2040, y_top7);
-    compute_signal_metrics(mag_z, size, sampling_rate_hz, &z_p99, &z_jerk, &z_b15, &z_b520, &z_b2040, z_top7);
+    compute_signal_metrics(mag_m, size, sampling_rate_hz, &m_p99, &m_jerk, &m_b15, &m_b520, &m_b2040, &m_b40100, m_top7);
+    compute_signal_metrics(mag_x, size, sampling_rate_hz, &x_p99, &x_jerk, &x_b15, &x_b520, &x_b2040, &x_b40100, x_top7);
+    compute_signal_metrics(mag_y, size, sampling_rate_hz, &y_p99, &y_jerk, &y_b15, &y_b520, &y_b2040, &y_b40100, y_top7);
+    compute_signal_metrics(mag_z, size, sampling_rate_hz, &z_p99, &z_jerk, &z_b15, &z_b520, &z_b2040, &z_b40100, z_top7);
 
     float x_zcr = compute_zcr(mag_x, size);
     float y_zcr = compute_zcr(mag_y, size);
@@ -257,6 +258,9 @@ InferenceFeatures compute_features(
 
     feat.m_band_20_40 = safe_float(m_b2040); feat.x_band_20_40 = safe_float(x_b2040);
     feat.y_band_20_40 = safe_float(y_b2040); feat.z_band_20_40 = safe_float(z_b2040);
+
+    feat.m_band_40_100 = safe_float(m_b40100); feat.x_band_40_100 = safe_float(x_b40100);
+    feat.y_band_40_100 = safe_float(y_b40100); feat.z_band_40_100 = safe_float(z_b40100);
 
     feat.m_band_1_5 = safe_float(m_b15); feat.x_band_1_5 = safe_float(x_b15);
     feat.y_band_1_5 = safe_float(y_b15); feat.z_band_1_5 = safe_float(z_b15);

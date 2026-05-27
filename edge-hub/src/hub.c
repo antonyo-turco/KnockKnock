@@ -157,9 +157,12 @@ static void buzzer_init(void) {
 
 static void activate_buzzer(void) {
     ESP_LOGI(TAG, "Activating buzzer!");
+    for (int i = 0; i < 10; ++i) { //250 ms * 10 = 2.5 seconds total buzzing
     gpio_set_level(BUZZER_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(200));
     gpio_set_level(BUZZER_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
 
 static void hub_publish_device_list_to_cloud(void) {

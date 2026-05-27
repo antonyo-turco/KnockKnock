@@ -48,9 +48,9 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG 150     /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN 120  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 190 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 125     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 100  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 150 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Adaptive threshold tuning
@@ -108,10 +108,11 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 // #define TRAINING_DURATION_MS          (15UL * 60UL * 1000UL)
 
 // Quick bench: 4 min total (2 min each)
-#define TRAINING_DEFAULT_DURATION_MS (4UL * 60UL * 1000UL)
-#define EXPLORING_DURATION_MS (2UL * 60UL * 1000UL)
-#define TRAINING_DURATION_MS (2UL * 60UL * 1000UL)
 
+#define MINUTES_MS(min) ((min) * 60UL * 1000UL)
+#define TRAINING_DEFAULT_DURATION_MS MINUTES_MS(20)
+#define EXPLORING_DURATION_MS MINUTES_MS(10)
+#define TRAINING_DURATION_MS MINUTES_MS(10)
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware Pin Definitions
 //

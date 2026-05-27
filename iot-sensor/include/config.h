@@ -11,36 +11,16 @@
 //  Nyquist     = SAMPLING_RATE_HZ / 2 = 50 Hz
 // ─────────────────────────────────────────────────────────────────────────────
 
-#ifdef __cplusplus
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Novelty buffer  (used during EXPLORING phase)
-//
-//  Stores normalised feature vectors that are "novel enough" relative to
-//  each other.  k++ seeding runs on this buffer at end of EXPLORING.
-//
-//  RAM cost: NOVELTY_BUFFER_SIZE × FEATURE_DIM × 4 B
-//  With FEATURE_DIM=45: 200 × 45 × 4 = 36 kB
-//
-//  NOVELTY_THRESHOLD: min Euclidean distance (normalised space) required
-//  for a sample to be considered novel.  Tune if buffer fills too fast
-//  (raise) or too slow (lower).
-// ─────────────────────────────────────────────────────────────────────────────
-
-static constexpr int SAMPLE_COUNT = 256;
-static constexpr int FFT_SIZE = 256;
-static constexpr float SAMPLING_RATE_HZ = 100.0f;
-static constexpr int SAMPLE_PERIOD_MS = 10;
-static constexpr int NOVELTY_BUFFER_SIZE = 200;
-static constexpr float NOVELTY_THRESHOLD = 1.5f;
-#else
-#define SAMPLE_COUNT 256
-#define FFT_SIZE 256
-#define SAMPLING_RATE_HZ 100.0f
-#define SAMPLE_PERIOD_MS 10
+#define SAMPLE_COUNT 512
+#define FFT_SIZE 512
+#define SAMPLING_RATE_HZ 200.0f
+#define SAMPLE_PERIOD_MS 5
 #define NOVELTY_BUFFER_SIZE 200
+#define MIN_CONSECUTIVE 2
+#define WAKEUP_THRESHOLD_DEFAULT 14
 #define NOVELTY_THRESHOLD 1.5f
-#endif
+
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Activity threshold for ADXL362 wakeup
@@ -48,9 +28,9 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG 125     /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN 100  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 150 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 50     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 75  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 100 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Adaptive threshold tuning
@@ -107,12 +87,12 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 // #define EXPLORING_DURATION_MS         (15UL * 60UL * 1000UL)
 // #define TRAINING_DURATION_MS          (15UL * 60UL * 1000UL)
 
-// Quick bench: 4 min total (2 min each)
+// Quick bench: 10 min total (5 min each)
 
 #define MINUTES_MS(min) ((min) * 60UL * 1000UL)
-#define TRAINING_DEFAULT_DURATION_MS MINUTES_MS(20)
-#define EXPLORING_DURATION_MS MINUTES_MS(10)
-#define TRAINING_DURATION_MS MINUTES_MS(10)
+#define TRAINING_DEFAULT_DURATION_MS MINUTES_MS(10)
+#define EXPLORING_DURATION_MS MINUTES_MS(5)
+#define TRAINING_DURATION_MS MINUTES_MS(5)
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware Pin Definitions
 //

@@ -70,6 +70,9 @@ RTC_DATA_ATTR static bool rtc_is_provisioned = false;
 /** True once a model has been trained and saved to NVS. */
 RTC_DATA_ATTR static bool rtc_is_trained = false;
 
+/** Counter for consecutive anomalies before raising an alarm. */
+RTC_DATA_ATTR static uint8_t rtc_alarm_counter = 0;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Task inter-communication
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +136,11 @@ static void goto_deep_sleep(void) {
 
   // Timer: periodic 24-h hub sync
   esp_sleep_enable_timer_wakeup((uint64_t)SYNC_INTERVAL_SEC * 1000000ULL);
+
+#if CONFIG_IDF_TARGET_ESP32C3
+  // ── Turn OFF internal LED before sleeping ─────────────────────────────────
+  gpio_set_level(GPIO_NUM_8, 1);
+#endif
 
   esp_deep_sleep_start();
   // Never returns
@@ -325,6 +333,26 @@ static void ml_processor_task(void *arg) {
   xSemaphoreTake(s_data_ready_sem, portMAX_DELAY);
   ESP_LOGI(TAG, "[ML] Running inference...");
 
+  // ── Clock validity check ───────────────────────────────────────────────
+  // If the RTC was never synced (e.g. power loss wiped RTC memory but NVS
+  // survived), request time from the hub before running ML inference.
+  // A Unix timestamp < 1 000 000 000 means the clock is at its epoch default
+  // (i.e., it has never been set — any date before year 2001 is invalid).
+  struct timeval tv_check;
+  gettimeofday(&tv_check, NULL);
+  if (tv_check.tv_sec < 1000000000L) {
+    ESP_LOGW(TAG, "RTC not synced (ts=%lld) — requesting time from hub.",
+             (long long)tv_check.tv_sec);
+    if (hub_comm_init() == ESP_OK) {
+      hub_info_t sync_info;
+      if (!hub_comm_get_information(&sync_info, 5000, 3)) {
+        ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without "
+                      "valid time.");
+      }
+      // hub_comm_get_information() calls settimeofday() internally on success
+    }
+  }
+
   // ── Compute time features ─────────────────────────────────────────────────
   float time_sin, time_cos;
   get_time_features(&time_sin, &time_cos);
@@ -375,34 +403,48 @@ static void ml_processor_task(void *arg) {
   // Remember when this wakeup happened (on every sensor event)
   rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
 
+  
+
+
+
+
   if (!is_baseline) {
-    // ── ANOMALY: send alarm and resync ────────────────────────────────────
-    ESP_LOGW(TAG, "[ML] DEVIATION detected — sending alarm to hub.");
+    rtc_alarm_counter++;
+    ESP_LOGW(TAG, "[ML] DEVIATION detected (consecutive: %u/%d).", 
+             rtc_alarm_counter, MIN_CONSECUTIVE);
 
-    ESP_ERROR_CHECK(hub_comm_init());
+    if (rtc_alarm_counter >= MIN_CONSECUTIVE) {
+      // ── ANOMALY: send alarm and resync ────────────────────────────────────
+      ESP_LOGW(TAG, "[ML] Alarm threshold reached — sending alarm to hub.");
 
-    hub_comm_send_alarm(1 /* alarm_code */, 5 /* max_retries */);
+      ESP_ERROR_CHECK(hub_comm_init());
 
-    hub_info_t info;
-    if (hub_comm_get_information(&info, 5000, 3)) {
-      // Clock already synced inside hub_comm_get_information()
-      if (info.do_reset) {
-        handle_hub_reset(); // Never returns
+      hub_comm_send_alarm(1 /* alarm_code */, 100 /* max_retries */);
+
+      rtc_alarm_counter = 0; // Reset after alarm
+
+      hub_info_t info;
+      if (hub_comm_get_information(&info, 5000, 3)) {
+        // Clock already synced inside hub_comm_get_information()
+        if (info.do_reset) {
+          handle_hub_reset(); // Never returns
+        }
+        if (info.do_ml_training) {
+          // Hub requested re-training after alarm
+          uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                      : EXPLORING_DURATION_MS;
+          uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                      : TRAINING_DURATION_MS;
+          run_training_phase(exp_ms, trn_ms);
+        }
+      } else {
+        ESP_LOGW(
+            TAG,
+            "[ML] Hub unreachable after alarm. Continuing with existing model.");
       }
-      if (info.do_ml_training) {
-        // Hub requested re-training after alarm
-        uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
-                                                    : EXPLORING_DURATION_MS;
-        uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
-                                                    : TRAINING_DURATION_MS;
-        run_training_phase(exp_ms, trn_ms);
-      }
-    } else {
-      ESP_LOGW(
-          TAG,
-          "[ML] Hub unreachable after alarm. Continuing with existing model.");
     }
-  }else {
+  } else {
+    rtc_alarm_counter = 0; // Reset on baseline
     ESP_LOGI(TAG, "[ML] Baseline activity — no alarm sent.");
   }
 
@@ -415,6 +457,13 @@ static void ml_processor_task(void *arg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void app_main(void) {
+#if CONFIG_IDF_TARGET_ESP32C3
+  // ── Turn ON internal LED (GPIO8 active low on Super Mini) ─────────────────
+  gpio_reset_pin(GPIO_NUM_8);
+  gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_NUM_8, 0); 
+#endif
+
   // ── NVS flash init (mandatory before any NVS/wifi/esp-now call) ───────────
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -563,26 +612,6 @@ void app_main(void) {
     if (!rtc_is_trained) {
       ESP_LOGW(TAG, "No trained model — need first-boot training. Restarting.");
       esp_restart();
-    }
-
-    // ── Clock validity check ───────────────────────────────────────────────
-    // If the RTC was never synced (e.g. power loss wiped RTC memory but NVS
-    // survived), request time from the hub before running ML inference.
-    // A Unix timestamp < 1 000 000 000 means the clock is at its epoch default
-    // (i.e., it has never been set — any date before year 2001 is invalid).
-    struct timeval tv_check;
-    gettimeofday(&tv_check, NULL);
-    if (tv_check.tv_sec < 1000000000L) {
-      ESP_LOGW(TAG, "RTC not synced (ts=%lld) — requesting time from hub.",
-               (long long)tv_check.tv_sec);
-      if (hub_comm_init() == ESP_OK) {
-        hub_info_t sync_info;
-        if (!hub_comm_get_information(&sync_info, 5000, 3)) {
-          ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without "
-                        "valid time.");
-        }
-        // hub_comm_get_information() calls settimeofday() internally on success
-      }
     }
 
     // Create the inter-task semaphore

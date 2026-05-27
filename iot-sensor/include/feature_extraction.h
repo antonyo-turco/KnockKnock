@@ -10,21 +10,25 @@ extern "C" {
 #endif
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Feature vector — 45 dimensions total
+//  Feature vector — 51 dimensions total
 //
 //  [0]     impact_score          weighted composite in [0,1]
 //
 //  [1- 4]  m/x/y/z  p99          99th percentile of |signal|
 //  [5- 8]  m/x/y/z  jerk_max     max |sample[i] - sample[i-1]|
 //  [9-12]  m/x/y/z  band_20_40   band power 20-40 Hz
-//  [13-16] m/x/y/z  band_1_5     band power  1-5  Hz
-//  [17-20] m/x/y/z  band_5_20    band power  5-20 Hz
+//  [13-16] m/x/y/z  band_40_100  band power 40-100 Hz  ← NEW
+//  [17-20] m/x/y/z  band_1_5     band power  1-5  Hz
+//  [21-24] m/x/y/z  band_5_20    band power  5-20 Hz
 //
-//  [21-23] x/y/z    zcr           zero-crossing rate  (crossings / sample)
+//  [25-27] x/y/z    zcr          zero-crossing rate  (crossings / sample)
 //
-//  [24-30] x  top7_freq[0..6]    Hz of 7 highest-magnitude FFT bins, ascending
-//  [31-37] y  top7_freq[0..6]
-//  [38-44] z  top7_freq[0..6]
+//  [28-34] x  top7_freq[0..6]    Hz of 7 highest-magnitude FFT bins, ascending
+//  [35-41] y  top7_freq[0..6]
+//  [42-48] z  top7_freq[0..6]
+//
+//  [49]    time_sin              sin(2π * minute_of_day / 1440)
+//  [50]    time_cos              cos(2π * minute_of_day / 1440)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #define TOP7_COUNT 7
@@ -40,6 +44,9 @@ typedef struct InferenceFeatures {
 
     // ── band power 20-40 Hz ──────────────────────────────────────────────────
     float m_band_20_40, x_band_20_40, y_band_20_40, z_band_20_40;
+
+    // ── band power 40-100 Hz ────────────────────────────────────────────────
+    float m_band_40_100, x_band_40_100, y_band_40_100, z_band_40_100;
 
     // ── band power 1-5 Hz ────────────────────────────────────────────────────
     float m_band_1_5, x_band_1_5, y_band_1_5, z_band_1_5;

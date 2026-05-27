@@ -1,0 +1,16 @@
+# ==============================================================================
+# KnockKnock Sensor – sdkconfig.defaults
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Wi-Fi / ESP-NOW
+# Disable STA-disconnected power management: when using ESP-NOW without
+# connecting to an AP, the radio must remain active at all times.
+# ------------------------------------------------------------------------------
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# FreeRTOS tick rate (1 kHz for precise vTaskDelayUntil timing)
+CONFIG_FREERTOS_HZ=1000
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -1,0 +1,46 @@
+@startuml PATH_C
+skinparam ActivityBackgroundColor #1e1e2e
+skinparam ActivityBorderColor #cba6f7
+skinparam ActivityFontColor #cdd6f4
+skinparam ActivityFontSize 13
+skinparam ArrowColor #cba6f7
+skinparam NoteBackgroundColor #313244
+skinparam NoteBorderColor #6c7086
+skinparam NoteFontColor #cdd6f4
+
+title PATH C — Timer Wakeup (24h hub sync)\n(SYNC_INTERVAL_SEC configurable in config.h)
+
+start
+
+:hub_comm_init();
+note right: Loads PMK/LMK/MAC from NVS\nStarts WiFi + ESP-NOW
+
+:hub_comm_get_information(5s, retry=3);
+note right: Clock sync via settimeofday()\nalready integrated in the function
+
+if (got_info?) then (YES)
+
+  if (do_reset?) then (YES)
+    :handle_hub_reset();
+    note right: Erases hub_mac + model from NVS\nesp_restart() -> PATH A with re-pairing
+    stop
+  endif
+
+  if (do_ml_training?) then (YES)
+    if (ml_duration_ms > 0?) then (YES — hub specifies duration)
+      :exp_ms = ml_duration_ms / 2\ntrn_ms = ml_duration_ms / 2;
+    else (NO — use config.h defaults)
+      :exp_ms = EXPLORING_DURATION_MS\ntrn_ms = TRAINING_DURATION_MS;
+    endif
+    :run_training_phase(exp_ms, trn_ms);
+    note right: See flow_05_training.puml
+  endif
+
+else (NO)
+  :ESP_LOGW "Hub unreachable\nduring 24h sync";
+endif
+
+:goto_deep_sleep();
+note right: Re-armed:\nEXT0 + TIMER (another 24h)
+stop
+@enduml

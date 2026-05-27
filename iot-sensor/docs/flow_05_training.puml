@@ -1,0 +1,91 @@
+@startuml TRAINING
+skinparam ActivityBackgroundColor #1e1e2e
+skinparam ActivityBorderColor #f38ba8
+skinparam ActivityFontColor #cdd6f4
+skinparam ActivityFontSize 13
+skinparam ArrowColor #f38ba8
+skinparam NoteBackgroundColor #313244
+skinparam NoteBorderColor #6c7086
+skinparam NoteFontColor #cdd6f4
+
+title run_training_phase(exploring_ms, training_ms)\nCalled from: PATH A, PATH B (on anomaly), PATH C
+
+start
+
+:training_init(&model);
+note right: Zeroes the model struct\nsets norm_std = 1.0f
+
+partition "Phase 1 — EXPLORING" {
+
+  :deadline = esp_timer_get_time() + exploring_ms;
+  :win_seq = 0;
+
+  while (esp_timer_get_time() < deadline?) is (YES)
+    :Sample SAMPLE_COUNT @ SAMPLING_RATE_HZ\nvTaskDelayUntil (precise timing);
+    :get_time_features(&time_sin, &time_cos);
+    :compute_features(g_xb, g_yb, g_zb, ...);
+    :exploring_update(&model, &feat);
+    note right
+      - Welford online normalisation
+      - Insert into novelty buffer
+        if sample is novel enough
+    end note
+    :win_seq++;
+    if (win_seq % 150 == 0?) then (YES)
+      :ESP_LOGI progress;
+    endif
+  endwhile (NO — time elapsed)
+
+  :exploring_finalize(&model);
+  note right
+    - Freeze normalisation (mean/std)
+    - k++ seeding on novelty buffer
+    - Places KMEANS_K centroids
+    - Returns false if buffer is sparse
+  end note
+}
+
+partition "Phase 2 — TRAINING" {
+
+  :deadline = esp_timer_get_time() + training_ms;
+  :win_seq = 0;
+
+  while (esp_timer_get_time() < deadline?) is (YES)
+    :Sample SAMPLE_COUNT @ SAMPLING_RATE_HZ;
+    :get_time_features(&time_sin, &time_cos);
+    :compute_features(g_xb, g_yb, g_zb, ...);
+    :training_update(&model, &feat);
+    note right
+      - Normalise with frozen stats
+      - Find nearest centroid
+      - Update centroid (online mean)
+      - Update Welford dist per cluster
+    end note
+    :win_seq++;
+    if (win_seq % 150 == 0?) then (YES)
+      :ESP_LOGI progress %;
+    endif
+  endwhile (NO — time elapsed)
+
+  :training_finalize(&model);
+  note right
+    For each cluster k:
+    thr = max(mean_dist + SIGMA_MULT * sigma,
+              dist_max  * MAX_DIST_MARGIN,
+              MIN_THRESHOLD)
+    model.finalised = true
+  end note
+}
+
+:training_save(&model);
+note right: Writes KMeansModel blob to NVS\n"antitheft" / "kmeans"\nOnly if model.finalised == true
+
+if (save OK?) then (YES)
+  :rtc_is_trained = true;
+  :ESP_LOGI "Model saved";
+else (NO)
+  :ESP_LOGE "Save FAILED";
+endif
+
+stop
+@enduml

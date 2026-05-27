@@ -25,5 +25,63 @@ KnockKnock is a low-cost, wireless IoT intrusion detection project focused on do
 #### [Second delivery MD](https://github.com/antonyo-turco/KnockKnock/blob/main/iot-MD/2nd-delivery.MD)
 
 
+## Getting Started
+
+### Prerequisites
+
+```bash
+pip install -r requirements.txt
+```
+
+### 1. Network setup
+
+Run once before building firmware, and again whenever your LAN IP changes:
+
+```bash
+python setup_network.py
+```
+
+This will:
+- Auto-detect your LAN IP
+- Generate TLS certificates for the MQTT broker
+- Copy `ca.crt` into the firmware tree (`edge-hub/certs/`)
+- Patch `CLOUD_MQTT_BROKER_IP` in `edge-hub/include/config.h`
+- Print a QR code to reach the web dashboard from your phone
+
+If the IP hasn't changed, the script exits early without regenerating certs. Use `--force` to override:
+
+```bash
+python setup_network.py --force
+```
+
+### 2. Start the cloud infrastructure
+
+```bash
+docker compose -f cloud-infrastructure/docker-compose.yml up -d
+```
+
+| Service | URL |
+| --- | --- |
+| Web dashboard | `http://<LAN-IP>:3000` |
+| Grafana | `http://<LAN-IP>:3001` |
+| InfluxDB | `http://<LAN-IP>:8086` |
+| MQTT (TLS) | `mqtts://<LAN-IP>:8883` |
+
+### 3. Build and flash the firmware
+
+**Edge hub:**
+```bash
+cd edge-hub
+pio run --target upload
+```
+
+**IoT sensor:**
+```bash
+cd iot-sensor
+pio run --target upload
+```
+
+---
+
 ## Youtube links
 ### [Demo second delivery](https://youtu.be/wBy7bFRrQwU)

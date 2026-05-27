@@ -375,6 +375,12 @@ static void ml_processor_task(void *arg) {
   // Remember when this wakeup happened (on every sensor event)
   rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
 
+
+  // ── Debounce voting window (MIN_CONSECUTIVE=2) ────────────────────────────
+  if (!is_baseline) {
+    rtc_alarm_counter++;
+    if (rtc_alarm_counter >= MIN_CONSECUTIVE) {
+      // Enough consecutive anomalies — trigger alarm
   if (!is_baseline) {
     // ── ANOMALY: send alarm and resync ────────────────────────────────────
     ESP_LOGW(TAG, "[ML] DEVIATION detected — sending alarm to hub.");
@@ -397,7 +403,9 @@ static void ml_processor_task(void *arg) {
                                                     : TRAINING_DURATION_MS;
         run_training_phase(exp_ms, trn_ms);
       }
-    } else {
+      rtc_alarm_counter = 0;  // Reset after alarm
+    }
+  } else {
       ESP_LOGW(
           TAG,
           "[ML] Hub unreachable after alarm. Continuing with existing model.");

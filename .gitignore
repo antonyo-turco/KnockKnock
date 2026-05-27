@@ -1,1 +1,8 @@
+data_analysis/exports/*
+data_analysis/accelerometer.db
+data_gathering/src/config.h
+v2.1/config.h
+baseline_6h_rocca.csv
+baseline_6h_roma.csv
+captured_data.csv
 .notes/

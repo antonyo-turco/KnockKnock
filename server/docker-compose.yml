@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  accelerometer-server:
+    build: .
+    ports:
+      - "5010:5010"
+    volumes:
+      - data:/data
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+
+volumes:
+  data:
+    driver: local

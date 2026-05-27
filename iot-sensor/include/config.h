@@ -7,8 +7,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  Sampling & FFT
 //  SAMPLE_COUNT == FFT_SIZE: no zero-padding, no data discarded.
-//  Resolution = SAMPLING_RATE_HZ / FFT_SIZE = 100 / 256 ≈ 0.39 Hz/bin
-//  Nyquist     = SAMPLING_RATE_HZ / 2 = 50 Hz
+//  Resolution = SAMPLING_RATE_HZ / FFT_SIZE = 200 / 512 ≈ 0.39 Hz/bin
+//  Nyquist     = SAMPLING_RATE_HZ / 2 = 100 Hz
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifdef __cplusplus
@@ -20,30 +20,46 @@
 //  each other.  k++ seeding runs on this buffer at end of EXPLORING.
 //
 //  RAM cost: NOVELTY_BUFFER_SIZE × FEATURE_DIM × 4 B
-//  With FEATURE_DIM=45: 200 × 45 × 4 = 36 kB
+//  With FEATURE_DIM=51: 200 × 51 × 4 = 40.8 kB
 //
 //  NOVELTY_THRESHOLD: min Euclidean distance (normalised space) required
 //  for a sample to be considered novel.  Tune if buffer fills too fast
 //  (raise) or too slow (lower).
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr int SAMPLE_COUNT = 256;
-static constexpr int FFT_SIZE = 256;
-static constexpr float SAMPLING_RATE_HZ = 100.0f;
-static constexpr int SAMPLE_PERIOD_MS = 10;
+static constexpr int SAMPLE_COUNT = 512;
+static constexpr int FFT_SIZE = 512;
+static constexpr float SAMPLING_RATE_HZ = 200.0f;
+static constexpr int SAMPLE_PERIOD_MS = 5;
 static constexpr int NOVELTY_BUFFER_SIZE = 200;
 static constexpr float NOVELTY_THRESHOLD = 1.5f;
 #else
-#define SAMPLE_COUNT 256
-#define FFT_SIZE 256
-#define SAMPLING_RATE_HZ 100.0f
-#define SAMPLE_PERIOD_MS 10
+#define SAMPLE_COUNT 512
+#define FFT_SIZE 512
+#define SAMPLING_RATE_HZ 200.0f
+#define SAMPLE_PERIOD_MS 5
 #define NOVELTY_BUFFER_SIZE 200
 #define NOVELTY_THRESHOLD 1.5f
 #endif
 
 /// ─────────────────────────────────────────────────────────────────────────────
-///  Activity threshold for ADXL362 wakeup
+///  Debounce voting window — consecutively anomalous frames required for alarm
+///
+///  With MIN_CONSECUTIVE=2 and 2.56s windows (512@200Hz), an alarm requires
+///  at least 5.12s of continuous anomaly. False positives (isolated windows)
+///  are filtered. Set to 1 to disable voting (direct decision on each window).
+/// ─────────────────────────────────────────────────────────────────────────────
+#define MIN_CONSECUTIVE   2
+
+/// ─────────────────────────────────────────────────────────────────────────────
+///  Activity threshold for ADXL362 wakeup — calibrated during EXPLORING
+///  WAKEUP_THRESHOLD_DEFAULT: default value (pre-calibration, in ADC units)
+///  This is overridden by reservoir sampling calibration during EXPLORING.
+/// ─────────────────────────────────────────────────────────────────────────────
+#define WAKEUP_THRESHOLD_DEFAULT   14u   /* ADC units; urban env ≈ 27, rural ≈ 14 */
+
+/// ─────────────────────────────────────────────────────────────────────────────
+///  Activity threshold for ADXL362 wakeup (legacy THRESHOLD_MG parameters)
 ///  THRESHOLD_MG:     default wake threshold in milli-g
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
@@ -71,7 +87,7 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  ADXL362 activity/inactivity detector settings
 /// ─────────────────────────────────────────────────────────────────────────────
-#define ACTIVITY_TIME_MS 1      /* 1 sample @ 100 Hz = 10 ms            */
+#define ACTIVITY_TIME_MS 1      /* 1 sample @ 200 Hz = 5 ms             */
 #define INACTIVITY_TIME_MS 5000 /* ms of no motion → ignore (unused)    */
 #define MOTION_DIFF_MG 80.0f    /* mg change between samples = motion   */
 

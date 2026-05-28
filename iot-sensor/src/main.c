@@ -51,6 +51,7 @@
 #include "fft_processor.h"
 
 #include "tinyml_training.h"
+#include "sliding_window.h"
 
 static const char *TAG = "MAIN";
 
@@ -100,6 +101,9 @@ static adxl362_handle_t g_sensor = NULL;
 
 static EventGroupHandle_t s_main_event_group = NULL;
 #define EVENT_TRAINING_DONE (1 << 0)
+
+/** Global sliding window state for continuous anomaly detection. */
+static SlidingWindowState g_window_state = {0};
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Forward declarations for LED helpers (defined after goto_deep_sleep)
@@ -326,10 +330,12 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   uint32_t win_seq = 0;
 
   while (esp_timer_get_time() < deadline_us) {
-    // Sample one window at the configured ODR
+    // Collect exactly WINDOW_SAMPLES samples — must match sliding_window_step()
+    // so that compute_features() receives the same size in both training and
+    // inference, keeping FFT zero-padding and band-power magnitudes identical.
     TickType_t xLastWake = xTaskGetTickCount();
     const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
-    for (int i = 0; i < SAMPLE_COUNT; i++) {
+    for (int i = 0; i < WINDOW_SAMPLES; i++) {
       vTaskDelayUntil(&xLastWake, xPeriod);
       adxl362_raw_data_t raw;
       if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
@@ -346,7 +352,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
     float time_sin, time_cos;
     get_time_features(&time_sin, &time_cos);
     InferenceFeatures feat = compute_features(
-        g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+        g_xb, g_yb, g_zb, WINDOW_SAMPLES, SAMPLING_RATE_HZ, time_sin, time_cos);
 
     exploring_update(&model, &feat);
     win_seq++;
@@ -370,6 +376,27 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   }
   ESP_LOGI(TAG, "EXPLORING done after %lu windows.", (unsigned long)win_seq);
 
+  // ── Apply adaptive ADXL362 activity threshold ─────────────────────────────
+  // Use the p99 of the per-window m_p99 values collected during EXPLORING.
+  // This calibrates the hardware wakeup threshold to the actual vibration
+  // level of this specific installation, replacing the fixed default.
+  if (model.suggested_threshold_mg > 0.0f) {
+    uint16_t t = (uint16_t)model.suggested_threshold_mg;
+    if (t < THRESHOLD_MG_MIN) t = THRESHOLD_MG_MIN;
+    if (t > THRESHOLD_MG_MAX) t = THRESHOLD_MG_MAX;
+    rtc_state.thresh_act = t;
+    if (g_sensor) {
+      adxl362_set_activity_threshold(g_sensor, t, ACTIVITY_TIME_MS, true);
+    }
+    ESP_LOGI(TAG, "[THRESHOLD] Adaptive: raw p99=%.1f mg → clamped to %u mg "
+             "(limits [%u, %u])",
+             model.suggested_threshold_mg, t,
+             (unsigned)THRESHOLD_MG_MIN, (unsigned)THRESHOLD_MG_MAX);
+  } else {
+    ESP_LOGW(TAG, "[THRESHOLD] No p99 data from EXPLORING — keeping default %u mg",
+             rtc_state.thresh_act);
+  }
+
   // ── Phase 2: TRAINING ─────────────────────────────────────────────────────
   ESP_LOGI(TAG, "--- TRAINING ---");
   deadline_us = esp_timer_get_time() + (int64_t)training_ms * 1000LL;
@@ -378,7 +405,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   while (esp_timer_get_time() < deadline_us) {
     TickType_t xLastWake = xTaskGetTickCount();
     const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
-    for (int i = 0; i < SAMPLE_COUNT; i++) {
+    for (int i = 0; i < WINDOW_SAMPLES; i++) {
       vTaskDelayUntil(&xLastWake, xPeriod);
       adxl362_raw_data_t raw;
       if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
@@ -395,7 +422,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
     float time_sin, time_cos;
     get_time_features(&time_sin, &time_cos);
     InferenceFeatures feat = compute_features(
-        g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+        g_xb, g_yb, g_zb, WINDOW_SAMPLES, SAMPLING_RATE_HZ, time_sin, time_cos);
 
     training_update(&model, &feat);
     win_seq++;
@@ -442,32 +469,30 @@ static void training_task_wrapper(void *arg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Fills g_xb / g_yb / g_zb with SAMPLE_COUNT samples at
- * SAMPLING_RATE_HZ, then signals the ML task via semaphore.
+ * @brief Streams samples into the sliding window one at a time at
+ * SAMPLING_RATE_HZ and signals the ML task every STEP_SAMPLES (50).
  */
 static void sensor_sampler_task(void *arg) {
-  ESP_LOGI(TAG, "[SAMPLER] Task started.");
+  ESP_LOGI(TAG, "[SAMPLER] Task started (sliding window mode @ 200 Hz).");
 
   TickType_t xLastWake = xTaskGetTickCount();
   const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
 
-  for (int i = 0; i < SAMPLE_COUNT; i++) {
+  int sample_count = 0;
+  while (1) {
     vTaskDelayUntil(&xLastWake, xPeriod);
+    sample_count++;
+    
     adxl362_raw_data_t raw;
     if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
-      g_xb[i] = raw.x;
-      g_yb[i] = raw.y;
-      g_zb[i] = raw.z;
-    } else {
-      g_xb[i] = 0;
-      g_yb[i] = 0;
-      g_zb[i] = 0;
+      // Add sample to sliding window
+      if (sliding_window_add_sample(&g_window_state, raw.x, raw.y, raw.z)) {
+        // 50 new samples collected — window ready for extraction
+        ESP_LOGD(TAG, "[SAMPLER] %d samples collected, releasing ML task", sample_count);
+        xSemaphoreGive(s_data_ready_sem);
+      }
     }
   }
-
-  ESP_LOGI(TAG, "[SAMPLER] Window ready — releasing ML task.");
-  xSemaphoreGive(s_data_ready_sem);
-  vTaskDelete(NULL);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -475,90 +500,83 @@ static void sensor_sampler_task(void *arg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Waits for the sampler to fill the buffer, computes features, runs
- *        inference, and either adjusts the threshold (baseline) or sends an
- *        alarm (deviation) before entering deep sleep.
+ * @brief ML processor task — runs continuous sliding window inference.
+ *        Loads model once, then processes 50-sample windows every 0.25s.
+ *        Maintains a 20-vote ring buffer (5 seconds) and triggers alarm
+ *        when vote count >= 3.
  */
 static void ml_processor_task(void *arg) {
-  // Block until the window is complete
-  xSemaphoreTake(s_data_ready_sem, portMAX_DELAY);
-  ESP_LOGI(TAG, "[ML] Running inference...");
-
-  // ── Clock validity check ───────────────────────────────────────────────
-  // If the RTC was never synced (e.g. power loss wiped RTC memory but NVS
-  // survived), request time from the hub before running ML inference.
-  // A Unix timestamp < 1 000 000 000 means the clock is at its epoch default
-  // (i.e., it has never been set — any date before year 2001 is invalid).
+  // Load model once at startup
+  KMeansModel model;
+  if (!training_load(&model)) {
+    ESP_LOGE(TAG, "[ML] No valid model in NVS — aborting.");
+    vTaskDelete(NULL);
+    return;
+  }
+  
+  // Initialize sliding window with the loaded model
+  sliding_window_init(&g_window_state, &model);
+  
+  // Clock validity check: sync time once at startup
   struct timeval tv_check;
   gettimeofday(&tv_check, NULL);
   if (tv_check.tv_sec < 1000000000L) {
-    ESP_LOGW(TAG, "RTC not synced (ts=%lld) — requesting time from hub.",
+    ESP_LOGW(TAG, "[ML] RTC not synced (ts=%lld) — requesting time from hub.",
              (long long)tv_check.tv_sec);
     if (hub_comm_init() == ESP_OK) {
       hub_info_t sync_info;
       if (!hub_comm_get_information(&sync_info, 5000, 3)) {
-        ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without "
-                      "valid time.");
+        ESP_LOGW(TAG, "[ML] Hub unreachable for clock sync — proceeding without valid time.");
       }
-      // hub_comm_get_information() calls settimeofday() internally on success
     }
   }
-
-  // ── Compute time features ─────────────────────────────────────────────────
-  float time_sin, time_cos;
-  get_time_features(&time_sin, &time_cos);
-
-  // ── Feature extraction ────────────────────────────────────────────────────
-  InferenceFeatures feat = compute_features(
-      g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
-
-  // ── Load model ────────────────────────────────────────────────────────────
-  KMeansModel model;
-  if (!training_load(&model)) {
-    ESP_LOGE(TAG, "[ML] No valid model in NVS — going back to sleep.");
-    goto_deep_sleep();
-    // Never returns
-  }
-
-  // ── Inference ─────────────────────────────────────────────────────────────
-  float dist = 0.0f;
-  int cluster = -1;
-  bool is_baseline = training_is_baseline(&model, &feat, &dist, &cluster);
-
-  ESP_LOGI(TAG, "[ML] impact=%.4f  m_p99=%.2f  dist=%.4f  C%d  %s",
-           feat.impact_score, feat.m_p99, dist, cluster,
-           is_baseline ? "BASELINE" : "*** DEVIATION ***");
-
-  // ── EMA rate-based threshold adaptation ──────────────────────────────────
-  struct timeval tv_now;
-  gettimeofday(&tv_now, NULL);
-  ema_adapt_threshold(tv_now.tv_sec, true);
-
   
-
-
-
-
-  if (!is_baseline) {
-    rtc_alarm_counter++;
-    ESP_LOGW(TAG, "[ML] DEVIATION detected (consecutive: %u/%d).", 
-             rtc_alarm_counter, MIN_CONSECUTIVE);
-
-    if (rtc_alarm_counter >= MIN_CONSECUTIVE) {
-      // ── ANOMALY: send alarm and resync ────────────────────────────────────
-      ESP_LOGW(TAG, "[ML] Alarm threshold reached — sending alarm to hub.");
-
+  // Main loop: continuous sliding window processing
+  while (1) {
+    // Block until we have STEP_SAMPLES new samples (50 @ 200 Hz = 0.25s)
+    xSemaphoreTake(s_data_ready_sem, portMAX_DELAY);
+    
+    ESP_LOGD(TAG, "[ML] Feature extraction window ready.");
+    
+    // Get current time
+    float time_sin, time_cos;
+    bool rtc_synced = get_time_features(&time_sin, &time_cos);
+    if (!rtc_synced) {
+      ESP_LOGD(TAG, "[ML] RTC not synced — using neutral time features");
+    }
+    
+    // Extract features and run inference (produces binary 0/1 vote)
+    int vote = sliding_window_step(&g_window_state, time_sin, time_cos);
+    if (vote < 0) {
+      ESP_LOGE(TAG, "[ML] Feature extraction failed");
+      continue;
+    }
+    
+    // Get current vote count
+    int vote_count = sliding_window_get_vote_count(&g_window_state);
+    
+    ESP_LOGI(TAG, "[ML] Vote: %d (0=normal, 1=anomaly), Total: %d/%d threshold: %d",
+             vote, vote_count, VOTE_WINDOW_N, VOTE_THRESHOLD);
+    
+    // Check if anomaly threshold reached
+    if (vote_count >= VOTE_THRESHOLD) {
+      ESP_LOGW(TAG, "[ALARM] Anomaly threshold reached! Votes: %d/%d — sending alarm",
+               vote_count, VOTE_WINDOW_N);
+      
+      // Update RTC threshold
+      struct timeval tv_now;
+      gettimeofday(&tv_now, NULL);
+      ema_adapt_threshold(tv_now.tv_sec, true);
+      
+      // Send alarm to hub
       led_sos_start();
-
       ESP_ERROR_CHECK(hub_comm_init());
-
-      hub_comm_send_alarm(1 /* alarm_code */, 100 /* max_retries */);
-
-      rtc_alarm_counter = 0; // Reset after alarm
-
+      hub_comm_send_alarm(0x02 /* alarm code */, 3 /* retries */);
+      
+      // Try to sync with hub and check for reset/retraining requests
       hub_info_t info;
       if (hub_comm_get_information(&info, 5000, 3)) {
-        // Clock already synced inside hub_comm_get_information()
+        ESP_LOGI(TAG, "[ML] Hub sync successful");
         if (info.do_reset) {
           handle_hub_reset(); // Never returns
         }
@@ -571,18 +589,23 @@ static void ml_processor_task(void *arg) {
           run_training_phase(exp_ms, trn_ms);
         }
       } else {
-        ESP_LOGW(
-            TAG,
-            "[ML] Hub unreachable after alarm. Continuing with existing model.");
+        ESP_LOGW(TAG, "[ML] Hub unreachable after alarm. Proceeding with existing model.");
       }
+      
+      // Reset and sleep
+      sliding_window_reset(&g_window_state);
+      goto_deep_sleep();
+      // Never returns
     }
-  } else {
-    rtc_alarm_counter = 0; // Reset on baseline
-    ESP_LOGI(TAG, "[ML] Baseline activity — no alarm sent.");
+    
+    // Normal baseline: continue sampling (no alarm yet)
+    if (vote == 0) {
+      struct timeval tv_now;
+      gettimeofday(&tv_now, NULL);
+      ema_adapt_threshold(tv_now.tv_sec, false); // don't update timestamp
+      ESP_LOGD(TAG, "[ML] Baseline detected — continuing");
+    }
   }
-
-  goto_deep_sleep();
-  // Never returns
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

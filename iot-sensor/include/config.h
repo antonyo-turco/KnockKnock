@@ -91,8 +91,8 @@
 
 #define MINUTES_MS(min) ((min) * 60UL * 1000UL)
 #define TRAINING_DEFAULT_DURATION_MS MINUTES_MS(10)
-#define EXPLORING_DURATION_MS MINUTES_MS(5)
-#define TRAINING_DURATION_MS MINUTES_MS(5)
+#define EXPLORING_DURATION_MS MINUTES_MS(1)
+#define TRAINING_DURATION_MS MINUTES_MS(1)
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware Pin Definitions
 //

@@ -39,28 +39,34 @@ static void features_to_raw(const InferenceFeatures *f,
   out[6] = f->x_jerk_max;
   out[7] = f->y_jerk_max;
   out[8] = f->z_jerk_max;
-  out[9] = f->m_band_20_40;
+  out[9]  = f->m_band_20_40;
   out[10] = f->x_band_20_40;
   out[11] = f->y_band_20_40;
   out[12] = f->z_band_20_40;
-  out[13] = f->m_band_1_5;
-  out[14] = f->x_band_1_5;
-  out[15] = f->y_band_1_5;
-  out[16] = f->z_band_1_5;
-  out[17] = f->m_band_5_20;
-  out[18] = f->x_band_5_20;
-  out[19] = f->y_band_5_20;
-  out[20] = f->z_band_5_20;
-  out[21] = f->x_zcr;
-  out[22] = f->y_zcr;
-  out[23] = f->z_zcr;
+  // [13-16] band_40_100 — was missing, causing a 4-slot shift that wrote
+  // time_sin/time_cos and the last four z_top7 bins out of bounds.
+  out[13] = f->m_band_40_100;
+  out[14] = f->x_band_40_100;
+  out[15] = f->y_band_40_100;
+  out[16] = f->z_band_40_100;
+  out[17] = f->m_band_1_5;
+  out[18] = f->x_band_1_5;
+  out[19] = f->y_band_1_5;
+  out[20] = f->z_band_1_5;
+  out[21] = f->m_band_5_20;
+  out[22] = f->x_band_5_20;
+  out[23] = f->y_band_5_20;
+  out[24] = f->z_band_5_20;
+  out[25] = f->x_zcr;
+  out[26] = f->y_zcr;
+  out[27] = f->z_zcr;
   for (int i = 0; i < TOP7_COUNT; ++i) {
-    out[24 + i] = f->x_top7_freq[i];
-    out[31 + i] = f->y_top7_freq[i];
-    out[38 + i] = f->z_top7_freq[i];
+    out[28 + i] = f->x_top7_freq[i];
+    out[35 + i] = f->y_top7_freq[i];
+    out[42 + i] = f->z_top7_freq[i];
   }
-  out[45] = f->time_sin;
-  out[46] = f->time_cos;
+  out[49] = f->time_sin;
+  out[50] = f->time_cos;
 }
 
 static void normalise(const KMeansModel *model, const float raw[FEATURE_DIM],
@@ -211,6 +217,20 @@ bool exploring_finalize(KMeansModel *model) {
     }
   }
   kmeans_pp_seed(model);
+
+  // ── Compute adaptive ADXL362 threshold from existing Welford stats ────────
+  // norm_mean[1] and norm_std[1] are the Welford mean and std-dev of m_p99
+  // (feature index 1) accumulated across every window during EXPLORING.
+  // mean + 3σ covers ~99.7% of a normal distribution — good approximation
+  // of p99 for unimodal vibration magnitudes, and requires zero extra memory.
+  model->suggested_threshold_mg = model->norm_mean[5] + 1.0f * model->norm_std[5];
+  ESP_LOGI(TAG_ML,
+           "[EXPLORING] Adaptive threshold: mean(m_p99)=%.1f  std=%.1f"
+           "  → mean+3σ = %.1f mg  (over %lu windows)",
+           model->norm_mean[1], model->norm_std[1],
+           model->suggested_threshold_mg,
+           (unsigned long)model->total_samples);
+
   return s_nov_count >= MIN_NOVELTY_FOR_SEEDING;
 }
 
@@ -350,15 +370,25 @@ bool training_is_baseline(const KMeansModel *model,
 
 // ── Debug print ──────────────────────────────────────────────────────────────
 
+// 51 names — must stay in sync with features_to_raw() index assignments.
+// Layout: [0] impact_score  [1-4] p99  [5-8] jerk_max  [9-12] band_20_40
+//         [13-16] band_40_100  [17-20] band_1_5  [21-24] band_5_20
+//         [25-27] zcr  [28-34] x_top7  [35-41] y_top7  [42-48] z_top7
+//         [49] time_sin  [50] time_cos
 static const char *FEAT_NAMES[FEATURE_DIM] = {
-    "impact_score", "m_p99",   "x_p99",   "y_p99",    "z_p99",   "m_jerk",
-    "x_jerk",       "y_jerk",  "z_jerk",  "m_b2040",  "x_b2040", "y_b2040",
-    "z_b2040",      "m_b1_5",  "x_b1_5",  "y_b1_5",   "z_b1_5",  "m_b5_20",
-    "x_b5_20",      "y_b5_20", "z_b5_20", "x_zcr",    "y_zcr",   "z_zcr",
-    "x_f0",         "x_f1",    "x_f2",    "x_f3",     "x_f4",    "x_f5",
-    "x_f6",         "y_f0",    "y_f1",    "y_f2",     "y_f3",    "y_f4",
-    "y_f5",         "y_f6",    "z_f0",    "z_f1",     "z_f2",    "z_f3",
-    "z_f4",         "z_f5",    "z_f6",    "time_sin", "time_cos"};
+    /* [0]     */ "impact_score",
+    /* [1- 4]  */ "m_p99",    "x_p99",    "y_p99",    "z_p99",
+    /* [5- 8]  */ "m_jerk",   "x_jerk",   "y_jerk",   "z_jerk",
+    /* [9-12]  */ "m_b2040",  "x_b2040",  "y_b2040",  "z_b2040",
+    /* [13-16] */ "m_b40100", "x_b40100", "y_b40100", "z_b40100",
+    /* [17-20] */ "m_b1_5",   "x_b1_5",   "y_b1_5",   "z_b1_5",
+    /* [21-24] */ "m_b5_20",  "x_b5_20",  "y_b5_20",  "z_b5_20",
+    /* [25-27] */ "x_zcr",    "y_zcr",    "z_zcr",
+    /* [28-34] */ "x_f0", "x_f1", "x_f2", "x_f3", "x_f4", "x_f5", "x_f6",
+    /* [35-41] */ "y_f0", "y_f1", "y_f2", "y_f3", "y_f4", "y_f5", "y_f6",
+    /* [42-48] */ "z_f0", "z_f1", "z_f2", "z_f3", "z_f4", "z_f5", "z_f6",
+    /* [49-50] */ "time_sin", "time_cos",
+};
 
 void training_print_model(const KMeansModel *model) {
   ESP_LOGI(TAG_ML, "╔══════════════════════════════════════════════╗");

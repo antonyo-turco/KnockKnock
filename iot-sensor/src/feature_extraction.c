@@ -4,12 +4,9 @@
 #include <time.h>
 #include <sys/time.h>
 #include "fft_processor.h"
-#include <math.h>
-#include <float.h>
-#include "fft_processor.h"
+#include "esp_log.h"
 
-
-
+static const char *TAG = "FEATURE_EXTRACTION";
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
@@ -180,8 +177,11 @@ bool get_time_features(float *time_sin_out, float *time_cos_out) {
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
+    
+    // FIX #2: Log RTC sync status and return false if not synced
     if (timeinfo.tm_year < (2016 - 1900)) {
         // RTC not synced yet — return neutral values (midnight)
+        ESP_LOGW(TAG, "RTC_NOT_SYNCED: Timestamp before 2016, using neutral time features (midnight)");
         *time_sin_out = 0.0f;
         *time_cos_out = 1.0f;
         return false;

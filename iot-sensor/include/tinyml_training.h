@@ -11,8 +11,10 @@
 
 #define KMEANS_K        10
 
-// 47 features — see feature_extraction.h for full index map
-#define FEATURE_DIM     47
+// 51 features — see feature_extraction.h for full index map
+#define FEATURE_DIM     51
+
+
 
 // Threshold = max(mean_dist + SIGMA_MULT * sigma, dist_max * MAX_DIST_MARGIN)
 #define SIGMA_MULT      3.0f
@@ -46,6 +48,12 @@ typedef struct KMeansModel {
     uint32_t total_samples;
     bool     initialised;   // true after k++ seeding (end of EXPLORING)
     bool     finalised;     // true after training_finalize() (end of TRAINING)
+
+    // ── Adaptive ADXL362 activity threshold ──────────────────────────────────
+    // Set by exploring_finalize() to the 99th percentile of the per-window
+    // m_p99 values collected during EXPLORING.  0 = not yet computed.
+    // Units: raw int16_t magnitude (= mg at ±2 g range, 1 mg/LSB).
+    float    suggested_threshold_mg;
 } KMeansModel;
 
 // ─────────────────────────────────────────────

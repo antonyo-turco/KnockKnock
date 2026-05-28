@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "FFT_PROCESSOR";
 
@@ -32,8 +33,12 @@ esp_err_t fft_processor_init(int max_samples) {
 }
 
 void fft_processor_compute_magnitude(float *input_signal, float *output_magnitude, int samples) {
+    // FIX #1: Se FFT fallisce, inizializza output_magnitude a 0 per evitare
+    // valori garbage/stali che silenziano le feature bandpower
     if (complex_workspace == NULL || samples > max_allocated_samples) {
-        ESP_LOGE(TAG, "Workspace non inizializzato o numero di campioni troppo elevato");
+        ESP_LOGE(TAG, "FFT FAILED: Workspace non inizializzato o numero di campioni troppo elevato");
+        // Azzera l'output array per evitare silent corruption delle feature
+        memset(output_magnitude, 0, (samples / 2) * sizeof(float));
         return;
     }
 

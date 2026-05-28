@@ -11,36 +11,16 @@
 //  Nyquist     = SAMPLING_RATE_HZ / 2 = 100 Hz
 // ─────────────────────────────────────────────────────────────────────────────
 
-#ifdef __cplusplus
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Novelty buffer  (used during EXPLORING phase)
-//
-//  Stores normalised feature vectors that are "novel enough" relative to
-//  each other.  k++ seeding runs on this buffer at end of EXPLORING.
-//
-//  RAM cost: NOVELTY_BUFFER_SIZE × FEATURE_DIM × 4 B
-//  With FEATURE_DIM=51: 200 × 51 × 4 = 40.8 kB
-//
-//  NOVELTY_THRESHOLD: min Euclidean distance (normalised space) required
-//  for a sample to be considered novel.  Tune if buffer fills too fast
-//  (raise) or too slow (lower).
-// ─────────────────────────────────────────────────────────────────────────────
-
-static constexpr int SAMPLE_COUNT = 512;
-static constexpr int FFT_SIZE = 512;
-static constexpr float SAMPLING_RATE_HZ = 200.0f;
-static constexpr int SAMPLE_PERIOD_MS = 5;
-static constexpr int NOVELTY_BUFFER_SIZE = 200;
-static constexpr float NOVELTY_THRESHOLD = 1.5f;
-#else
 #define SAMPLE_COUNT 512
 #define FFT_SIZE 512
 #define SAMPLING_RATE_HZ 200.0f
 #define SAMPLE_PERIOD_MS 5
 #define NOVELTY_BUFFER_SIZE 200
+#define MIN_CONSECUTIVE 1
+#define WAKEUP_THRESHOLD_DEFAULT 14
 #define NOVELTY_THRESHOLD 1.5f
-#endif
+
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Debounce voting window — consecutively anomalous frames required for alarm
@@ -64,19 +44,19 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG 150     /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN 120  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 190 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 50     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 100  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 140 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
-///  Adaptive threshold tuning
-///  If the sensor woke up within THRESHOLD_ADJUST_TIME_SEC of the last wakeup
-///  (= too often) → raise threshold by THRESHOLD_STEP_UP.
-///  Otherwise → lower it by THRESHOLD_STEP_DOWN (back to baseline sensitivity).
+///  EMA rate-based adaptive threshold
+///  LAMBDA_TARGET: target wakeup rate (interrupts/sec). 14/3600 ≈ 1% duty
+///                 cycle at the 2.56-second sampling window.
+///  ALPHA_EMA:     smoothing factor for the exponential moving average.
+///                 Lower = slower reaction; 0.2 tracks ~5-event rolling mean.
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_ADJUST_TIME_SEC 60 /* window for "waking too often" check */
-#define THRESHOLD_STEP_UP 10         /* mg to raise when too frequent       */
-#define THRESHOLD_STEP_DOWN 5        /* mg to lower when timing is normal   */
+#define LAMBDA_TARGET  (14.0f / 3600.0f) /* target rate: ~14 wakes/hr       */
+#define ALPHA_EMA       0.2f             /* EMA smoothing factor             */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Deep-sleep wakeup sources
@@ -123,11 +103,12 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 // #define EXPLORING_DURATION_MS         (15UL * 60UL * 1000UL)
 // #define TRAINING_DURATION_MS          (15UL * 60UL * 1000UL)
 
-// Quick bench: 4 min total (2 min each)
-#define TRAINING_DEFAULT_DURATION_MS (4UL * 60UL * 1000UL)
-#define EXPLORING_DURATION_MS (2UL * 60UL * 1000UL)
-#define TRAINING_DURATION_MS (2UL * 60UL * 1000UL)
+// Quick bench: 10 min total (5 min each)
 
+#define MINUTES_MS(min) ((min) * 60UL * 1000UL)
+#define TRAINING_DEFAULT_DURATION_MS MINUTES_MS(10)
+#define EXPLORING_DURATION_MS MINUTES_MS(1)
+#define TRAINING_DURATION_MS MINUTES_MS(1)
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hardware Pin Definitions
 //
@@ -152,5 +133,9 @@ static constexpr float NOVELTY_THRESHOLD = 1.5f;
 #define MY_PIN_INT1 GPIO_NUM_3 /* must be a valid GPIO for deep sleep wakeup   \
                                 */
 #define MY_SPI_CLOCK 1000000   /* 1 MHz - reduced for debugging on breadboard */
+
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+#define MY_PIN_LED GPIO_NUM_8  /* active-LOW internal LED on ESP32-C3 Super Mini */
+#endif
 
 #endif // CONFIG_H

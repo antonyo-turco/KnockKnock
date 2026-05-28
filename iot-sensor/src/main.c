@@ -51,6 +51,7 @@
 #include "fft_processor.h"
 
 #include "tinyml_training.h"
+#include "sliding_window.h"
 
 static const char *TAG = "MAIN";
 
@@ -58,17 +59,30 @@ static const char *TAG = "MAIN";
 //  RTC memory — persists across deep sleep, reset to 0 on power-on
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Current ADXL362 activity threshold (mg). Adaptively tuned at runtime. */
-RTC_DATA_ATTR static uint16_t rtc_threshold_mg = THRESHOLD_MG;
+typedef struct {
+    float    lambda_ema;     /* smoothed wakeup rate (interrupts/sec)      */
+    int64_t  last_wake_sec;  /* epoch seconds of last sensor wakeup        */
+    uint16_t thresh_act;     /* current ADXL362 activity threshold (mg)    */
+    uint8_t  valid;          /* 0 on first boot, 1 after first wake cycle  */
+} rtc_state_t;
 
-/** Timestamp (seconds since epoch) of the last GPIO wakeup. */
-RTC_DATA_ATTR static int64_t rtc_last_sensor_wakeup_sec = 0;
+RTC_DATA_ATTR static rtc_state_t rtc_state = {
+    .lambda_ema    = LAMBDA_TARGET,
+    .last_wake_sec = 0,
+    .thresh_act    = THRESHOLD_MG,
+    .valid         = 0,
+};
+
+/** Debounce counter — incremented on each anomaly, reset after alarm. */
+RTC_DATA_ATTR static uint8_t rtc_alarm_counter = 0;
 
 /** True once hub MAC has been saved to NVS and pairing is confirmed. */
 RTC_DATA_ATTR static bool rtc_is_provisioned = false;
 
 /** True once a model has been trained and saved to NVS. */
 RTC_DATA_ATTR static bool rtc_is_trained = false;
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Task inter-communication
@@ -88,9 +102,52 @@ static adxl362_handle_t g_sensor = NULL;
 static EventGroupHandle_t s_main_event_group = NULL;
 #define EVENT_TRAINING_DONE (1 << 0)
 
+/** Global sliding window state for continuous anomaly detection. */
+static SlidingWindowState g_window_state = {0};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Forward declarations for LED helpers (defined after goto_deep_sleep)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void led_sos_stop(void);
+static void led_training_stop(void);
+static inline void led_off(void);
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Update the EMA rate estimator and scale the activity threshold.
+ *
+ * @param now_sec   Current epoch time in seconds (from gettimeofday).
+ * @param update_ts If true, advance last_wake_sec to now_sec (sensor wakes
+ *                  only — timer wakes must NOT consume the quiet-period dt).
+ */
+static void ema_adapt_threshold(int64_t now_sec, bool update_ts) {
+    if (rtc_state.valid && rtc_state.last_wake_sec > 0) {
+        int64_t dt = now_sec - rtc_state.last_wake_sec;
+        if (dt > 0) {
+            float lambda_meas = 1.0f / (float)dt;
+            rtc_state.lambda_ema = ALPHA_EMA * lambda_meas
+                                 + (1.0f - ALPHA_EMA) * rtc_state.lambda_ema;
+            float scale = rtc_state.lambda_ema / LAMBDA_TARGET;
+            uint16_t t = (uint16_t)((float)rtc_state.thresh_act * scale);
+            if (t < THRESHOLD_MG_MIN) t = THRESHOLD_MG_MIN;
+            if (t > THRESHOLD_MG_MAX) t = THRESHOLD_MG_MAX;
+            rtc_state.thresh_act = t;
+            ESP_LOGI(TAG, "[THRESHOLD] λ_ema=%.5f  scale=%.3f  →  %u mg",
+                     rtc_state.lambda_ema, scale, rtc_state.thresh_act);
+        }
+    } else {
+        rtc_state.valid = 1;
+        ESP_LOGI(TAG, "[THRESHOLD] First wakeup — init threshold %u mg",
+                 rtc_state.thresh_act);
+    }
+    if (update_ts) {
+        rtc_state.last_wake_sec = now_sec;
+    }
+}
 
 /**
  * @brief Erase hub pairing data from NVS and flag the device as unprovisioned.
@@ -102,7 +159,11 @@ static void handle_hub_reset(void) {
   training_erase_nvs();
   rtc_is_provisioned = false;
   rtc_is_trained = false;
-  rtc_threshold_mg = THRESHOLD_MG;
+  rtc_alarm_counter = 0;
+  rtc_state.thresh_act    = THRESHOLD_MG;
+  rtc_state.lambda_ema    = LAMBDA_TARGET;
+  rtc_state.last_wake_sec = 0;
+  rtc_state.valid         = 0;
   esp_restart();
 }
 
@@ -113,19 +174,25 @@ static void handle_hub_reset(void) {
  */
 static void goto_deep_sleep(void) {
   ESP_LOGI(TAG, "Configuring deep sleep. ADXL362 threshold = %u mg",
-           rtc_threshold_mg);
+           rtc_state.thresh_act);
 
   if (g_sensor) {
-    adxl362_set_activity_threshold(g_sensor, rtc_threshold_mg, ACTIVITY_TIME_MS,
+    adxl362_set_activity_threshold(g_sensor, rtc_state.thresh_act, ACTIVITY_TIME_MS,
                                    true);
     // Stop then restart so the new threshold takes effect
     adxl362_stop_measurement(g_sensor);
     adxl362_start_measurement(g_sensor);
 
+    // Wait for the sensor to settle and take a few samples
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     // Clear any pending activity interrupt so we do not wake up immediately
     uint8_t dummy_status = 0;
     adxl362_get_status(g_sensor, &dummy_status);
   }
+
+  // Ensure Wi-Fi is stopped before deep sleep to prevent crashes/high power draw
+  esp_wifi_stop();
 
   // GPIO: ADXL362 INT1 line goes high on activity
   esp_deep_sleep_enable_gpio_wakeup(1ULL << MY_PIN_INT1,
@@ -134,9 +201,100 @@ static void goto_deep_sleep(void) {
   // Timer: periodic 24-h hub sync
   esp_sleep_enable_timer_wakeup((uint64_t)SYNC_INTERVAL_SEC * 1000000ULL);
 
+  led_sos_stop();
+  led_training_stop();
+  led_off();
+
   esp_deep_sleep_start();
   // Never returns
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LED helpers  (GPIO 8, active-LOW on ESP32-C3 Super Mini)
+//  Stubs are provided for other targets so callers need no #ifdefs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+
+static esp_timer_handle_t s_train_blink_timer = NULL;
+static TaskHandle_t       s_sos_task_handle   = NULL;
+
+static inline void led_on(void)  { gpio_set_level(MY_PIN_LED, 0); }
+static inline void led_off(void) { gpio_set_level(MY_PIN_LED, 1); }
+
+/* periodic timer callback: toggles LED every 1 s during training */
+static void train_blink_cb(void *arg) {
+    static bool s = true;   /* starts ON; first tick flips to OFF */
+    s = !s;
+    gpio_set_level(MY_PIN_LED, s ? 0 : 1);
+}
+
+static void led_training_start(void) {
+    if (s_train_blink_timer) return;
+    const esp_timer_create_args_t args = { .callback = train_blink_cb,
+                                           .name = "led_train" };
+    esp_timer_create(&args, &s_train_blink_timer);
+    led_on();
+    esp_timer_start_periodic(s_train_blink_timer, 1000000ULL); /* 1 s */
+}
+
+static void led_training_stop(void) {
+    if (!s_train_blink_timer) return;
+    esp_timer_stop(s_train_blink_timer);
+    esp_timer_delete(s_train_blink_timer);
+    s_train_blink_timer = NULL;
+    led_off();
+}
+
+/* SOS: ··· --- ··· + pause, loops until deleted */
+#define SOS_DOT_ON_MS    200
+#define SOS_DOT_OFF_MS   150
+#define SOS_DASH_ON_MS   600
+#define SOS_DASH_OFF_MS  150
+#define SOS_LETTER_MS    300
+#define SOS_PAUSE_MS    1500
+
+static void sos_task(void *arg) {
+    while (1) {
+        for (int i = 0; i < 3; i++) {          /* S */
+            led_on();  vTaskDelay(pdMS_TO_TICKS(SOS_DOT_ON_MS));
+            led_off(); vTaskDelay(pdMS_TO_TICKS(SOS_DOT_OFF_MS));
+        }
+        vTaskDelay(pdMS_TO_TICKS(SOS_LETTER_MS));
+        for (int i = 0; i < 3; i++) {          /* O */
+            led_on();  vTaskDelay(pdMS_TO_TICKS(SOS_DASH_ON_MS));
+            led_off(); vTaskDelay(pdMS_TO_TICKS(SOS_DASH_OFF_MS));
+        }
+        vTaskDelay(pdMS_TO_TICKS(SOS_LETTER_MS));
+        for (int i = 0; i < 3; i++) {          /* S */
+            led_on();  vTaskDelay(pdMS_TO_TICKS(SOS_DOT_ON_MS));
+            led_off(); vTaskDelay(pdMS_TO_TICKS(SOS_DOT_OFF_MS));
+        }
+        vTaskDelay(pdMS_TO_TICKS(SOS_PAUSE_MS));
+    }
+}
+
+static void led_sos_start(void) {
+    if (s_sos_task_handle) return;
+    xTaskCreate(sos_task, "led_sos", 1024, NULL, 3, &s_sos_task_handle);
+}
+
+static void led_sos_stop(void) {
+    if (!s_sos_task_handle) return;
+    vTaskDelete(s_sos_task_handle);
+    s_sos_task_handle = NULL;
+    led_off();
+}
+
+#else  /* ── stubs for non-C3 targets ─────────────────────────────────────── */
+
+static inline void led_off(void)            {}
+static inline void led_training_start(void) {}
+static inline void led_training_stop(void)  {}
+static inline void led_sos_start(void)      {}
+static inline void led_sos_stop(void)       {}
+
+#endif /* CONFIG_IDF_TARGET_ESP32C3 */
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Training phase
@@ -160,6 +318,9 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
     return;
   }
 
+  led_sos_stop();       /* cancel SOS if training follows an alarm */
+  led_training_start(); /* 1 s on / 1 s off for the whole training phase */
+
   KMeansModel model;
   training_init(&model);
 
@@ -169,10 +330,12 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   uint32_t win_seq = 0;
 
   while (esp_timer_get_time() < deadline_us) {
-    // Sample one window at the configured ODR
+    // Collect exactly WINDOW_SAMPLES samples — must match sliding_window_step()
+    // so that compute_features() receives the same size in both training and
+    // inference, keeping FFT zero-padding and band-power magnitudes identical.
     TickType_t xLastWake = xTaskGetTickCount();
     const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
-    for (int i = 0; i < SAMPLE_COUNT; i++) {
+    for (int i = 0; i < WINDOW_SAMPLES; i++) {
       vTaskDelayUntil(&xLastWake, xPeriod);
       adxl362_raw_data_t raw;
       if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
@@ -189,7 +352,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
     float time_sin, time_cos;
     get_time_features(&time_sin, &time_cos);
     InferenceFeatures feat = compute_features(
-        g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+        g_xb, g_yb, g_zb, WINDOW_SAMPLES, SAMPLING_RATE_HZ, time_sin, time_cos);
 
     exploring_update(&model, &feat);
     win_seq++;
@@ -213,6 +376,27 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   }
   ESP_LOGI(TAG, "EXPLORING done after %lu windows.", (unsigned long)win_seq);
 
+  // ── Apply adaptive ADXL362 activity threshold ─────────────────────────────
+  // Use the p99 of the per-window m_p99 values collected during EXPLORING.
+  // This calibrates the hardware wakeup threshold to the actual vibration
+  // level of this specific installation, replacing the fixed default.
+  if (model.suggested_threshold_mg > 0.0f) {
+    uint16_t t = (uint16_t)model.suggested_threshold_mg;
+    if (t < THRESHOLD_MG_MIN) t = THRESHOLD_MG_MIN;
+    if (t > THRESHOLD_MG_MAX) t = THRESHOLD_MG_MAX;
+    rtc_state.thresh_act = t;
+    if (g_sensor) {
+      adxl362_set_activity_threshold(g_sensor, t, ACTIVITY_TIME_MS, true);
+    }
+    ESP_LOGI(TAG, "[THRESHOLD] Adaptive: raw p99=%.1f mg → clamped to %u mg "
+             "(limits [%u, %u])",
+             model.suggested_threshold_mg, t,
+             (unsigned)THRESHOLD_MG_MIN, (unsigned)THRESHOLD_MG_MAX);
+  } else {
+    ESP_LOGW(TAG, "[THRESHOLD] No p99 data from EXPLORING — keeping default %u mg",
+             rtc_state.thresh_act);
+  }
+
   // ── Phase 2: TRAINING ─────────────────────────────────────────────────────
   ESP_LOGI(TAG, "--- TRAINING ---");
   deadline_us = esp_timer_get_time() + (int64_t)training_ms * 1000LL;
@@ -221,7 +405,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   while (esp_timer_get_time() < deadline_us) {
     TickType_t xLastWake = xTaskGetTickCount();
     const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
-    for (int i = 0; i < SAMPLE_COUNT; i++) {
+    for (int i = 0; i < WINDOW_SAMPLES; i++) {
       vTaskDelayUntil(&xLastWake, xPeriod);
       adxl362_raw_data_t raw;
       if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
@@ -238,7 +422,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
     float time_sin, time_cos;
     get_time_features(&time_sin, &time_cos);
     InferenceFeatures feat = compute_features(
-        g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
+        g_xb, g_yb, g_zb, WINDOW_SAMPLES, SAMPLING_RATE_HZ, time_sin, time_cos);
 
     training_update(&model, &feat);
     win_seq++;
@@ -264,6 +448,8 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   } else {
     ESP_LOGE(TAG, "Failed to save model to NVS!");
   }
+
+  led_training_stop();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,32 +469,30 @@ static void training_task_wrapper(void *arg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Fills g_xb / g_yb / g_zb with SAMPLE_COUNT samples at
- * SAMPLING_RATE_HZ, then signals the ML task via semaphore.
+ * @brief Streams samples into the sliding window one at a time at
+ * SAMPLING_RATE_HZ and signals the ML task every STEP_SAMPLES (50).
  */
 static void sensor_sampler_task(void *arg) {
-  ESP_LOGI(TAG, "[SAMPLER] Task started.");
+  ESP_LOGI(TAG, "[SAMPLER] Task started (sliding window mode @ 200 Hz).");
 
   TickType_t xLastWake = xTaskGetTickCount();
   const TickType_t xPeriod = pdMS_TO_TICKS(1000 / (int)SAMPLING_RATE_HZ);
 
-  for (int i = 0; i < SAMPLE_COUNT; i++) {
+  int sample_count = 0;
+  while (1) {
     vTaskDelayUntil(&xLastWake, xPeriod);
+    sample_count++;
+    
     adxl362_raw_data_t raw;
     if (adxl362_read_raw(g_sensor, &raw) == ESP_OK) {
-      g_xb[i] = raw.x;
-      g_yb[i] = raw.y;
-      g_zb[i] = raw.z;
-    } else {
-      g_xb[i] = 0;
-      g_yb[i] = 0;
-      g_zb[i] = 0;
+      // Add sample to sliding window
+      if (sliding_window_add_sample(&g_window_state, raw.x, raw.y, raw.z)) {
+        // 50 new samples collected — window ready for extraction
+        ESP_LOGD(TAG, "[SAMPLER] %d samples collected, releasing ML task", sample_count);
+        xSemaphoreGive(s_data_ready_sem);
+      }
     }
   }
-
-  ESP_LOGI(TAG, "[SAMPLER] Window ready — releasing ML task.");
-  xSemaphoreGive(s_data_ready_sem);
-  vTaskDelete(NULL);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,106 +500,112 @@ static void sensor_sampler_task(void *arg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Waits for the sampler to fill the buffer, computes features, runs
- *        inference, and either adjusts the threshold (baseline) or sends an
- *        alarm (deviation) before entering deep sleep.
+ * @brief ML processor task — runs continuous sliding window inference.
+ *        Loads model once, then processes 50-sample windows every 0.25s.
+ *        Maintains a 20-vote ring buffer (5 seconds) and triggers alarm
+ *        when vote count >= 3.
  */
 static void ml_processor_task(void *arg) {
-  // Block until the window is complete
-  xSemaphoreTake(s_data_ready_sem, portMAX_DELAY);
-  ESP_LOGI(TAG, "[ML] Running inference...");
-
-  // ── Compute time features ─────────────────────────────────────────────────
-  float time_sin, time_cos;
-  get_time_features(&time_sin, &time_cos);
-
-  // ── Feature extraction ────────────────────────────────────────────────────
-  InferenceFeatures feat = compute_features(
-      g_xb, g_yb, g_zb, SAMPLE_COUNT, SAMPLING_RATE_HZ, time_sin, time_cos);
-
-  // ── Load model ────────────────────────────────────────────────────────────
+  // Load model once at startup
   KMeansModel model;
   if (!training_load(&model)) {
-    ESP_LOGE(TAG, "[ML] No valid model in NVS — going back to sleep.");
-    goto_deep_sleep();
-    // Never returns
+    ESP_LOGE(TAG, "[ML] No valid model in NVS — aborting.");
+    vTaskDelete(NULL);
+    return;
   }
-
-  // ── Inference ─────────────────────────────────────────────────────────────
-  float dist = 0.0f;
-  int cluster = -1;
-  bool is_baseline = training_is_baseline(&model, &feat, &dist, &cluster);
-
-  ESP_LOGI(TAG, "[ML] impact=%.4f  m_p99=%.2f  dist=%.4f  C%d  %s",
-           feat.impact_score, feat.m_p99, dist, cluster,
-           is_baseline ? "BASELINE" : "*** DEVIATION ***");
-
-  // ── Current time (for threshold adaptation) ───────────────────────────────
-  struct timeval tv_now;
-  gettimeofday(&tv_now, NULL);
-
-  int64_t delta_sec =
-      (rtc_last_sensor_wakeup_sec > 0)
-          ? (tv_now.tv_sec - rtc_last_sensor_wakeup_sec)
-          : (THRESHOLD_ADJUST_TIME_SEC + 1); // treat as "ok" on first event
-
-  if (delta_sec < THRESHOLD_ADJUST_TIME_SEC) {
-    // Waking up too frequently — raise threshold to reduce false wakes
-    rtc_threshold_mg = (uint16_t)(rtc_threshold_mg + THRESHOLD_STEP_UP);
-    if (rtc_threshold_mg > THRESHOLD_MG_MAX) {
-      rtc_threshold_mg = THRESHOLD_MG_MAX;
-    }
-    ESP_LOGW(TAG, "[THRESHOLD] Waking up too frequently (delta=%llds). Raised threshold to %u mg.",
-             (long long)delta_sec, rtc_threshold_mg);
-  } else {
-    ESP_LOGI(TAG, "[THRESHOLD] Normal timing (delta=%llds). Threshold kept at %u mg.",
-             (long long)delta_sec, rtc_threshold_mg);
-  }
-
-  // Remember when this wakeup happened (on every sensor event)
-  rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
-
-
-  // ── Debounce voting window (MIN_CONSECUTIVE=2) ────────────────────────────
-  if (!is_baseline) {
-    rtc_alarm_counter++;
-    if (rtc_alarm_counter >= MIN_CONSECUTIVE) {
-      // Enough consecutive anomalies — trigger alarm
-  if (!is_baseline) {
-    // ── ANOMALY: send alarm and resync ────────────────────────────────────
-    ESP_LOGW(TAG, "[ML] DEVIATION detected — sending alarm to hub.");
-
-    ESP_ERROR_CHECK(hub_comm_init());
-
-    hub_comm_send_alarm(1 /* alarm_code */, 5 /* max_retries */);
-
-    hub_info_t info;
-    if (hub_comm_get_information(&info, 5000, 3)) {
-      // Clock already synced inside hub_comm_get_information()
-      if (info.do_reset) {
-        handle_hub_reset(); // Never returns
+  
+  // Initialize sliding window with the loaded model
+  sliding_window_init(&g_window_state, &model);
+  
+  // Clock validity check: sync time once at startup
+  struct timeval tv_check;
+  gettimeofday(&tv_check, NULL);
+  if (tv_check.tv_sec < 1000000000L) {
+    ESP_LOGW(TAG, "[ML] RTC not synced (ts=%lld) — requesting time from hub.",
+             (long long)tv_check.tv_sec);
+    if (hub_comm_init() == ESP_OK) {
+      hub_info_t sync_info;
+      if (!hub_comm_get_information(&sync_info, 5000, 3)) {
+        ESP_LOGW(TAG, "[ML] Hub unreachable for clock sync — proceeding without valid time.");
       }
-      if (info.do_ml_training) {
-        // Hub requested re-training after alarm
-        uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
-                                                    : EXPLORING_DURATION_MS;
-        uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
-                                                    : TRAINING_DURATION_MS;
-        run_training_phase(exp_ms, trn_ms);
-      }
-      rtc_alarm_counter = 0;  // Reset after alarm
     }
-  } else {
-      ESP_LOGW(
-          TAG,
-          "[ML] Hub unreachable after alarm. Continuing with existing model.");
-    }
-  }else {
-    ESP_LOGI(TAG, "[ML] Baseline activity — no alarm sent.");
   }
-
-  goto_deep_sleep();
-  // Never returns
+  
+  // Main loop: continuous sliding window processing
+  while (1) {
+    // Block until we have STEP_SAMPLES new samples (50 @ 200 Hz = 0.25s)
+    xSemaphoreTake(s_data_ready_sem, portMAX_DELAY);
+    
+    ESP_LOGD(TAG, "[ML] Feature extraction window ready.");
+    
+    // Get current time
+    float time_sin, time_cos;
+    bool rtc_synced = get_time_features(&time_sin, &time_cos);
+    if (!rtc_synced) {
+      ESP_LOGD(TAG, "[ML] RTC not synced — using neutral time features");
+    }
+    
+    // Extract features and run inference (produces binary 0/1 vote)
+    int vote = sliding_window_step(&g_window_state, time_sin, time_cos);
+    if (vote < 0) {
+      ESP_LOGE(TAG, "[ML] Feature extraction failed");
+      continue;
+    }
+    
+    // Get current vote count
+    int vote_count = sliding_window_get_vote_count(&g_window_state);
+    
+    ESP_LOGI(TAG, "[ML] Vote: %d (0=normal, 1=anomaly), Total: %d/%d threshold: %d",
+             vote, vote_count, VOTE_WINDOW_N, VOTE_THRESHOLD);
+    
+    // Check if anomaly threshold reached
+    if (vote_count >= VOTE_THRESHOLD) {
+      ESP_LOGW(TAG, "[ALARM] Anomaly threshold reached! Votes: %d/%d — sending alarm",
+               vote_count, VOTE_WINDOW_N);
+      
+      // Update RTC threshold
+      struct timeval tv_now;
+      gettimeofday(&tv_now, NULL);
+      ema_adapt_threshold(tv_now.tv_sec, true);
+      
+      // Send alarm to hub
+      led_sos_start();
+      ESP_ERROR_CHECK(hub_comm_init());
+      hub_comm_send_alarm(0x02 /* alarm code */, 3 /* retries */);
+      
+      // Try to sync with hub and check for reset/retraining requests
+      hub_info_t info;
+      if (hub_comm_get_information(&info, 5000, 3)) {
+        ESP_LOGI(TAG, "[ML] Hub sync successful");
+        if (info.do_reset) {
+          handle_hub_reset(); // Never returns
+        }
+        if (info.do_ml_training) {
+          // Hub requested re-training after alarm
+          uint32_t exp_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                      : EXPLORING_DURATION_MS;
+          uint32_t trn_ms = (info.ml_duration_ms > 0) ? info.ml_duration_ms / 2
+                                                      : TRAINING_DURATION_MS;
+          run_training_phase(exp_ms, trn_ms);
+        }
+      } else {
+        ESP_LOGW(TAG, "[ML] Hub unreachable after alarm. Proceeding with existing model.");
+      }
+      
+      // Reset and sleep
+      sliding_window_reset(&g_window_state);
+      goto_deep_sleep();
+      // Never returns
+    }
+    
+    // Normal baseline: continue sampling (no alarm yet)
+    if (vote == 0) {
+      struct timeval tv_now;
+      gettimeofday(&tv_now, NULL);
+      ema_adapt_threshold(tv_now.tv_sec, false); // don't update timestamp
+      ESP_LOGD(TAG, "[ML] Baseline detected — continuing");
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,6 +613,13 @@ static void ml_processor_task(void *arg) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void app_main(void) {
+#if CONFIG_IDF_TARGET_ESP32C3
+  // ── Turn ON internal LED (GPIO8 active low on Super Mini) ─────────────────
+  gpio_reset_pin(GPIO_NUM_8);
+  gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_NUM_8, 0); 
+#endif
+
   // ── NVS flash init (mandatory before any NVS/wifi/esp-now call) ───────────
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -436,7 +633,7 @@ void app_main(void) {
   esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
 
   // ── Sensor init (needed in all paths) ─────────────────────────────────────
-  g_sensor = sensor_init();
+  g_sensor = sensor_init(SAMPLING_RATE_HZ);
   if (!g_sensor) {
     ESP_LOGE(TAG, "ADXL362 initialisation failed. Retrying in 5 s...");
     vTaskDelay(pdMS_TO_TICKS(5000));
@@ -526,7 +723,7 @@ void app_main(void) {
       }
       // hub_comm_pair() saved the MAC to NVS internally
       rtc_is_provisioned = true;
-      rtc_threshold_mg = THRESHOLD_MG;
+      rtc_state.thresh_act = THRESHOLD_MG;
       ESP_LOGI(TAG, "Pairing successful. Device is now provisioned.");
     } else {
       ESP_LOGI(TAG, "Already provisioned — skipping pairing.");
@@ -573,26 +770,6 @@ void app_main(void) {
       esp_restart();
     }
 
-    // ── Clock validity check ───────────────────────────────────────────────
-    // If the RTC was never synced (e.g. power loss wiped RTC memory but NVS
-    // survived), request time from the hub before running ML inference.
-    // A Unix timestamp < 1 000 000 000 means the clock is at its epoch default
-    // (i.e., it has never been set — any date before year 2001 is invalid).
-    struct timeval tv_check;
-    gettimeofday(&tv_check, NULL);
-    if (tv_check.tv_sec < 1000000000L) {
-      ESP_LOGW(TAG, "RTC not synced (ts=%lld) — requesting time from hub.",
-               (long long)tv_check.tv_sec);
-      if (hub_comm_init() == ESP_OK) {
-        hub_info_t sync_info;
-        if (!hub_comm_get_information(&sync_info, 5000, 3)) {
-          ESP_LOGW(TAG, "Hub unreachable for clock sync — proceeding without "
-                        "valid time.");
-        }
-        // hub_comm_get_information() calls settimeofday() internally on success
-      }
-    }
-
     // Create the inter-task semaphore
     s_data_ready_sem = xSemaphoreCreateBinary();
     if (!s_data_ready_sem) {
@@ -616,14 +793,12 @@ void app_main(void) {
   else { // wakeup == ESP_SLEEP_WAKEUP_TIMER
     ESP_LOGI(TAG, "=== 24-H HUB SYNC ===");
 
-    // Gently lower threshold during timer sync (proves environment has been quiet)
-    if (rtc_threshold_mg > THRESHOLD_STEP_DOWN + THRESHOLD_MG_MIN) {
-      rtc_threshold_mg = (uint16_t)(rtc_threshold_mg - THRESHOLD_STEP_DOWN);
-    } else {
-      rtc_threshold_mg = THRESHOLD_MG_MIN;
+    // EMA decay: large dt since last sensor wake → λ_meas << λ_target → threshold drops
+    {
+      struct timeval tv_now;
+      gettimeofday(&tv_now, NULL);
+      ema_adapt_threshold(tv_now.tv_sec, false);
     }
-    ESP_LOGI(TAG, "[THRESHOLD] 24-h sync quiet period. Gently lowered threshold to %u mg.",
-             rtc_threshold_mg);
 
     ESP_ERROR_CHECK(hub_comm_init());
 

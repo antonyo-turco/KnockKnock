@@ -8,7 +8,7 @@
  * CLOUD_MQTT_BROKER_IP must match the CN in the TLS server cert.
  * Run setup_network.py from the project root to auto-detect your LAN IP,
  * regenerate certs, and patch this value in one step. */
-#define CLOUD_MQTT_BROKER_IP "192.168.0.209"
+#define CLOUD_MQTT_BROKER_IP "10.185.153.111"
 #define CLOUD_MQTT_URI        "mqtts://" CLOUD_MQTT_BROKER_IP ":8883"
 #include "secrets.h"
 

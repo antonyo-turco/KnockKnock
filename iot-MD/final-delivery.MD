@@ -192,7 +192,3 @@ We measured the time elapsed from the physical impact on the window frame to the
 *   **Cloud MQTT Publication (< 100 ms):** The Hub receives, decrypts, and publishes the secure TLS MQTT packet to the alarm dashboard.
 
 **Total Alert Latency: ~ 2.74 Seconds**
-
----
-
-#UltraLowPower #OnDeviceML #ESP32C3 #ADXL362 #ESP-NOW #KMeans #EdgeComputing #Cybersecurity

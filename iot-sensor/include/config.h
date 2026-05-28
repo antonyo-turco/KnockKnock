@@ -28,9 +28,9 @@
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG 150     /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN 150  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 170 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 50     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 100  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 140 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  EMA rate-based adaptive threshold

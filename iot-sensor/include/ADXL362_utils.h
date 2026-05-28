@@ -3,7 +3,6 @@
 #include "freertos/FreeRTOS.h"
 
 
-
 static const char *TAG1 = "ADXL362_UTILS";
 
 /* =========================================================

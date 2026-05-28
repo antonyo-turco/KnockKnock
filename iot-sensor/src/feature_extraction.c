@@ -111,7 +111,6 @@ static void compute_signal_metrics(
     float *band_1_5_out, float *band_5_20_out, float *band_20_40_out, float *band_40_100_out,
     float top7_freq_out[TOP7_COUNT])
     {
-    // ── Time-domain metrics ──────────────────────────────────────────────────
     *p99_out      = percentile_99(signal, size);
     *jerk_max_out = 0.0f;
     for (int i = 1; i < size; ++i) {

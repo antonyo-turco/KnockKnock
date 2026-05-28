@@ -490,13 +490,11 @@ static void ml_processor_task(void *arg) {
 
 void app_main(void) {
 #if CONFIG_IDF_TARGET_ESP32C3
-  // ── Turn ON internal LED (GPIO8 active low on Super Mini) ─────────────────
   gpio_reset_pin(GPIO_NUM_8);
   gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT);
-  gpio_set_level(GPIO_NUM_8, 0); 
+  gpio_set_level(GPIO_NUM_8, 0);
 #endif
 
-  // ── NVS flash init (mandatory before any NVS/wifi/esp-now call) ───────────
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
       err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -505,10 +503,8 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(err);
 
-  // ── Determine wakeup cause ────────────────────────────────────────────────
   esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
 
-  // ── Sensor init (needed in all paths) ─────────────────────────────────────
   g_sensor = sensor_init(SAMPLING_RATE_HZ);
   if (!g_sensor) {
     ESP_LOGE(TAG, "ADXL362 initialisation failed. Retrying in 5 s...");

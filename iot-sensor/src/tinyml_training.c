@@ -190,7 +190,7 @@ void exploring_update(KMeansModel *model, const InferenceFeatures *features) {
     }
   }
 
-  if (model->norm_n >= 30) {
+  if (model->norm_n >= 5) {
     float norm_fv[FEATURE_DIM];
     normalise(model, raw, norm_fv);
     novelty_try_insert(norm_fv);

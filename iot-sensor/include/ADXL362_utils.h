@@ -44,7 +44,6 @@ static adxl362_handle_t sensor_init(float frequency_hz) {
       frequency_hz = 100;
       break;
   }
-  adxl362_set_odr(sensor, ADXL362_ODR_100_HZ);
 
   adxl362_set_activity_threshold(sensor, THRESHOLD_MG, ACTIVITY_TIME_MS, true);
   // adxl362_set_inactivity_threshold(sensor, THRESHOLD_MG, INACTIVITY_TIME_MS,

@@ -12,19 +12,6 @@ KnockKnock is a low-cost, wireless, and ultra-low-power IoT intrusion detection 
 </p>
 
 ---
-
-## Key Features
-
-- **Three-Tier Network Isolation:** Designed around a secure, air-gapped topology. The low-power sensor operates in an IP-less subnet communicating via peer-encrypted ESP-NOW. It connects to a local gateway that bridges data via a cryptographically secured serial interface (UART with AES-128-GCM) to the local Hub, preventing direct public internet exposure.
-- **Hardware-Level Power Optimization:** Quiescent current is reduced to just 50 µA during deep sleep. A single-core **ESP32-C3 RISC-V SoC** is gated by an ultra-low-power **ADXL362 digital accelerometer watchdog** drawing only 270 nA. The MCU remains completely powered down until woken by a physical motion threshold interrupt, enabling up to 1.6 years of battery life.
-- **On-Device K-Means++ Anomaly Detection:** Implements unsupervised anomaly classification directly on the ESP32-C3 microcontroller. Processes a 51-Dimensional Fast Fourier Transform (FFT) mapping the 40 Hz to 100 Hz band to accurately distinguish structural intrusion vibrations (drilling, hammering, glass breaks) from ambient disturbances (wind, traffic, rain) while using only 42 KB of RAM and saving 16x energy compared to transmitting raw data.
-- **Silicon-to-Link Cryptographic Security:** Enforces complete defense-in-depth protection:
-  - *Silicon Root of Trust:* Burned OTP eFuse registers to permanently disable hardware JTAG debugging and lock down signed firmware via Secure Boot V2.
-  - *Data at Rest:* AES-XTS-128/256 flash encryption on application binaries and credentials stored in an encrypted NVS partition.
-  - *Link Layer:* ESP-NOW packet frame encryption using AES-CCM with peer-specific Local Master Keys (LMK), isolating physical node compromises.
-
----
-
 ## Our Team
 
 We are a group of Sapienza University of Rome students passionate about IoT, embedded systems, and low-power hardware design.
@@ -66,7 +53,7 @@ Stay updated with our progress through our project log and presentations.
 
 ### Deliveries
 
-| Stage | Resource / Artifact | Format / Link |
+| Stage | Artifact |  Link |
 | :--- | :--- | :--- |
 | **First Delivery** | First Delivery Presentation | [Presentation](https://github.com/antonyo-turco/iot-presentations/blob/9377e07d5346901678ff115f52adedeaf1f66225/1st-presentation/outputs/main.pdf) |
 | **Second Delivery** | Second Delivery Presentation<br>Detailed Design Document<br>Demo Video | [Presentation](https://github.com/antonyo-turco/KnockKnock/blob/main/Second%20delivery%20presentation.pdf)<br>[Report](https://github.com/antonyo-turco/KnockKnock/blob/main/iot-MD/2nd-delivery.MD)<br>[Video Demo](https://youtu.be/wBy7bFRrQwU) |

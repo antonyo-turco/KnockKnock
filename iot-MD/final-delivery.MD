@@ -35,7 +35,7 @@ A major architectural flaw in many modern IoT systems is direct cloud-to-device 
 
 KnockKnock solves this through a robust **Three-Tier Architecture** that prioritizes network isolation, security, and extreme power efficiency.
 
-![Figure 1: The three-tier security topology. The sensor operates inside an air-gapped ESP-NOW local subnet, routing to the gateway, which bridges data via UART to a secure serial-connected hub.](https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/system_architecture_sapienza.png)
+![Figure 1: The three-tier security topology. The sensor operates inside an air-gapped ESP-NOW local subnet, routing to the gateway, which bridges data via UART to a secure serial-connected hub.](https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/system_architecture_sapienza.png)
 
 ### The Three Tiers Explained:
 1.  **Tier 1: The Sensor Node (ESP32-C3 + ADXL362)**  
@@ -70,14 +70,14 @@ A similar transformation occurred with the micro-controller. The original ESP32 
 
 By migrating to the single-core **ESP32-C3 RISC-V SoC**, we reduced the deep-sleep current to a tiny **50 µA**. The ESP32-C3 is physically smaller, much cheaper, and perfectly matches our computational needs.
 
-![Figure 2: The physical KnockKnock prototype. An ultra-compact layout utilizing the ESP32-C3 connected to the ADXL362 breakout board, powered by a small rechargeable battery.](https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/project_photo.jpeg)
+![Figure 2: The physical KnockKnock prototype. An ultra-compact layout utilizing the ESP32-C3 connected to the ADXL362 breakout board, powered by a small rechargeable battery.](https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/project_photo.jpeg)
 
 ### The State Machine Architecture: Zero-Current Default
 How do we achieve an average quiescent draw of just 50µA? The system is designed around a **hardware-gated state machine** where the power-hungry MCU is completely powered OFF (in deep sleep) by default.
 
 The ADXL362 operates as a low-power digital watchdog. Using its internal motion detection registers, it samples the environment. As long as the window is still, the MCU sleeps. The moment a shock exceeds the hardware-configured threshold (e.g. 150mg), the ADXL362 fires its **INT1 physical pin**, which acts as a GPIO wake-up interrupt for the ESP32-C3. The MCU boots in milliseconds, samples the vibration data, evaluates it, and goes back to sleep.
 
-![Figure 3: High-resolution state machine mapping of the sensor node. By default, the system remains in a 50µA quiescent state, waking up instantly only when the physical motion threshold triggers.](https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/state_diagram_sapienza.png)
+![Figure 3: High-resolution state machine mapping of the sensor node. By default, the system remains in a 50µA quiescent state, waking up instantly only when the physical motion threshold triggers.](https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/state_diagram_sapienza.png)
 
 ---
 
@@ -103,17 +103,17 @@ When the ADXL362 wake-up interrupt triggers, the ESP32-C3 performs the following
 5.  **Real-Time Inference:** In monitoring mode, the incoming 51-D vector's Euclidean distance *d*\* to the nearest K-Means centroid is calculated. If *d*\* &le; &theta;<sub>k</sub>, it is classified as baseline ambient noise and ignored. If *d*\* &gt; &theta;<sub>k</sub>, it is flagged as an anomaly. The inference takes less than **10 ms** and runs in 510 Multiply-Accumulate (MAC) operations!
 
 ### Machine Learning Visualizations
-*   **Farthest-Point Seeding:** Using farthest-point initialization instead of random seeding prevents early cluster collapse. In urban environments, it improves the average inter-centroid distance spread from 11.94 to 27.73 (a 2.3x improvement), guaranteeing distinct clusters for traffic, wind, rain, and slamming. (Refer to remote plot: `https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/ml_1.png`)
-*   **Outlier Novelty Buffer 2D PCA:** A major constraint of the ESP32-C3 is its 400 KB RAM. We cannot store thousands of training samples. By maintaining an intelligent rolling buffer of the 200 samples with the highest centroid distances, we capture the full boundary of ambient noise, using only 40.8 KB of memory. (Refer to remote plot: `https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/ml_2.png`)
-*   **Sweeping K to Optimize False Positives:** A sweep of cluster counts (*K*) reveals that the false positive rate hits a minimum at *K* = 10 for both urban and rural installations. Increasing *K* beyond 10 yields diminishing returns, while lower values collapse different ambient signals together, raising false triggers. (Refer to remote plot: `https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/ml_3.png`)
-*   **Power Spectral Density Analysis:** Normal ambient signals (wind, rain) show low-energy sways below 40 Hz. In contrast, burglary attempts (glass cracking, drilling) produce massive high-energy spectral spikes in the 40 Hz to 100 Hz band, making our targeted 51-D FFT vector highly discriminative. (Refer to remote plot: `https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/ml_4.png`)
+*   **Farthest-Point Seeding:** Using farthest-point initialization instead of random seeding prevents early cluster collapse. In urban environments, it improves the average inter-centroid distance spread from 11.94 to 27.73 (a 2.3x improvement), guaranteeing distinct clusters for traffic, wind, rain, and slamming. (Refer to remote plot: `https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/ml_1.png`)
+*   **Outlier Novelty Buffer 2D PCA:** A major constraint of the ESP32-C3 is its 400 KB RAM. We cannot store thousands of training samples. By maintaining an intelligent rolling buffer of the 200 samples with the highest centroid distances, we capture the full boundary of ambient noise, using only 40.8 KB of memory. (Refer to remote plot: `https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/ml_2.png`)
+*   **Sweeping K to Optimize False Positives:** A sweep of cluster counts (*K*) reveals that the false positive rate hits a minimum at *K* = 10 for both urban and rural installations. Increasing *K* beyond 10 yields diminishing returns, while lower values collapse different ambient signals together, raising false triggers. (Refer to remote plot: `https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/ml_3.png`)
+*   **Power Spectral Density Analysis:** Normal ambient signals (wind, rain) show low-energy sways below 40 Hz. In contrast, burglary attempts (glass cracking, drilling) produce massive high-energy spectral spikes in the 40 Hz to 100 Hz band, making our targeted 51-D FFT vector highly discriminative. (Refer to remote plot: `https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/ml_4.png`)
 
 ### Achieving a Perfect 0% False Positive Rate via Voting
 While the individual K-Means classifier is highly accurate, it still has a minute false positive rate of 0.032% in heavy urban environments (equivalent to 1 false alarm every few days).
 
 To bring this down to absolute zero, KnockKnock implements a **majority voting strategy**. A single anomalous window event is ignored. An alarm is only dispatched if the sensor registers **MINCONSECUTIVE = 2** consecutive anomalous signals (spanning 5.12 seconds). Because random environmental spikes are isolated, this temporal voting filter reduces the false positive rate to exactly **0.0%**!
 
-| ![Figure 4: Normal environmental vibrations (wind, raindrops). Signal peaks around 35, safely remaining within baseline boundaries and preventing false triggers.](https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/window_energy_with_no_alarm_detected.png) | ![Figure 5: Vibration profile during an active intrusion attempt. The energy rapidly escalates past 200, breaching the Dynamic Cluster Threshold and triggering an alarm.](https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/window_energy_with_alarm_detected.png) |
+| ![Figure 4: Normal environmental vibrations (wind, raindrops). Signal peaks around 35, safely remaining within baseline boundaries and preventing false triggers.](https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/window_energy_with_no_alarm_detected.png) | ![Figure 5: Vibration profile during an active intrusion attempt. The energy rapidly escalates past 200, breaching the Dynamic Cluster Threshold and triggering an alarm.](https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/window_energy_with_alarm_detected.png) |
 | :---: | :---: |
 | **Figure 4:** Normal baseline ambient disturbances | **Figure 5:** Burglary attempt vibration profile |
 
@@ -125,7 +125,7 @@ IoT devices are notorious for their lack of security. In physical intrusion syst
 
 KnockKnock implements a strict **defense-in-depth cryptographic model** written entirely in native **ESP-IDF** (avoiding the security-bloated Arduino wrapper). It enforces protection across three independent layers:
 
-![Figure 6: Comprehensive cryptographic architecture. The system relies on hardware-enforced trust roots (eFuses), AES-XTS flash encryption, and AES-CCM encrypted local ESP-NOW transport.](https://github.com/antonyo-turco/KnockKnock/tree/main/iot-MD/images2/security_sapienza.png)
+![Figure 6: Comprehensive cryptographic architecture. The system relies on hardware-enforced trust roots (eFuses), AES-XTS flash encryption, and AES-CCM encrypted local ESP-NOW transport.](https://raw.githubusercontent.com/antonyo-turco/KnockKnock/main/iot-MD/images2/security_sapienza.png)
 
 ### Layer 1: Hardware-Enforced Root of Trust (SoC Level)
 Security must start in the physical silicon. During the initial provisioning of the ESP32-C3, we blow specific one-time programmable (OTP) **eFuse registers** to permanently configure the chip's security hardware.

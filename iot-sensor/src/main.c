@@ -43,7 +43,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#include "ADXL362_utils.h"
+#include "sensor_init.h"
 #include "config.h"
 #include "feature_extraction.h"
 #include "hub_communication.h"

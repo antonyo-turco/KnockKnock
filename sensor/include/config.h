@@ -67,8 +67,8 @@
 // Quick bench: 10 min total (5 min each)
 #define MINUTES_MS(min) ((min) * 60UL * 1000UL)
 #define TRAINING_DEFAULT_DURATION_MS MINUTES_MS(10)
-#define EXPLORING_DURATION_MS MINUTES_MS(1)
-#define TRAINING_DURATION_MS MINUTES_MS(1)
+#define EXPLORING_DURATION_MS MINUTES_MS(5)
+#define TRAINING_DURATION_MS MINUTES_MS(5)
 
 // Hardware pin definitions — ESP32-C3 Super Mini to ADXL362
 //

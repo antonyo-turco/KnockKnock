@@ -1,0 +1,16 @@
+# Build commands — verified working
+
+# PlatformIO is not on PATH; use the full binary:
+#   Windows: C:\Users\anton\.platformio\penv\Scripts\pio.exe
+#   Git Bash: /c/Users/anton/.platformio/penv/Scripts/pio.exe
+
+# sensor (ESP32-C3 Super Mini)
+# Prereq: sensor/components/fft_lib/CMakeLists.txt must exist (was missing, now added)
+cd sensor && pio run -e c3
+
+# edge-hub (ESP32-C3)
+# Prereq: sdkconfig.c3 must have CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=5 (not 6, which is out of range for C3)
+cd edge-hub && pio run -e c3
+
+# cloud-infrastructure (Docker)
+cd cloud-infrastructure && docker compose up -d

@@ -43,6 +43,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "led_indicator.h"
 #include "sensor_init.h"
 #include "config.h"
 #include "feature_extraction.h"
@@ -104,14 +105,6 @@ static EventGroupHandle_t s_main_event_group = NULL;
 
 /** Global sliding window state for continuous anomaly detection. */
 static SlidingWindowState g_window_state = {0};
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Forward declarations for LED helpers (defined after goto_deep_sleep)
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void led_sos_stop(void);
-static void led_training_stop(void);
-static inline void led_off(void);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Internal helpers
@@ -208,93 +201,6 @@ static void goto_deep_sleep(void) {
   esp_deep_sleep_start();
   // Never returns
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  LED helpers  (GPIO 8, active-LOW on ESP32-C3 Super Mini)
-//  Stubs are provided for other targets so callers need no #ifdefs.
-// ─────────────────────────────────────────────────────────────────────────────
-
-#ifdef CONFIG_IDF_TARGET_ESP32C3
-
-static esp_timer_handle_t s_train_blink_timer = NULL;
-static TaskHandle_t       s_sos_task_handle   = NULL;
-
-static inline void led_on(void)  { gpio_set_level(MY_PIN_LED, 0); }
-static inline void led_off(void) { gpio_set_level(MY_PIN_LED, 1); }
-
-/* periodic timer callback: toggles LED every 1 s during training */
-static void train_blink_cb(void *arg) {
-    static bool s = true;   /* starts ON; first tick flips to OFF */
-    s = !s;
-    gpio_set_level(MY_PIN_LED, s ? 0 : 1);
-}
-
-static void led_training_start(void) {
-    if (s_train_blink_timer) return;
-    const esp_timer_create_args_t args = { .callback = train_blink_cb,
-                                           .name = "led_train" };
-    esp_timer_create(&args, &s_train_blink_timer);
-    led_on();
-    esp_timer_start_periodic(s_train_blink_timer, 1000000ULL); /* 1 s */
-}
-
-static void led_training_stop(void) {
-    if (!s_train_blink_timer) return;
-    esp_timer_stop(s_train_blink_timer);
-    esp_timer_delete(s_train_blink_timer);
-    s_train_blink_timer = NULL;
-    led_off();
-}
-
-/* SOS: ··· --- ··· + pause, loops until deleted */
-#define SOS_DOT_ON_MS    200
-#define SOS_DOT_OFF_MS   150
-#define SOS_DASH_ON_MS   600
-#define SOS_DASH_OFF_MS  150
-#define SOS_LETTER_MS    300
-#define SOS_PAUSE_MS    1500
-
-static void sos_task(void *arg) {
-    while (1) {
-        for (int i = 0; i < 3; i++) {          /* S */
-            led_on();  vTaskDelay(pdMS_TO_TICKS(SOS_DOT_ON_MS));
-            led_off(); vTaskDelay(pdMS_TO_TICKS(SOS_DOT_OFF_MS));
-        }
-        vTaskDelay(pdMS_TO_TICKS(SOS_LETTER_MS));
-        for (int i = 0; i < 3; i++) {          /* O */
-            led_on();  vTaskDelay(pdMS_TO_TICKS(SOS_DASH_ON_MS));
-            led_off(); vTaskDelay(pdMS_TO_TICKS(SOS_DASH_OFF_MS));
-        }
-        vTaskDelay(pdMS_TO_TICKS(SOS_LETTER_MS));
-        for (int i = 0; i < 3; i++) {          /* S */
-            led_on();  vTaskDelay(pdMS_TO_TICKS(SOS_DOT_ON_MS));
-            led_off(); vTaskDelay(pdMS_TO_TICKS(SOS_DOT_OFF_MS));
-        }
-        vTaskDelay(pdMS_TO_TICKS(SOS_PAUSE_MS));
-    }
-}
-
-static void led_sos_start(void) {
-    if (s_sos_task_handle) return;
-    xTaskCreate(sos_task, "led_sos", 1024, NULL, 3, &s_sos_task_handle);
-}
-
-static void led_sos_stop(void) {
-    if (!s_sos_task_handle) return;
-    vTaskDelete(s_sos_task_handle);
-    s_sos_task_handle = NULL;
-    led_off();
-}
-
-#else  /* ── stubs for non-C3 targets ─────────────────────────────────────── */
-
-static inline void led_off(void)            {}
-static inline void led_training_start(void) {}
-static inline void led_training_stop(void)  {}
-static inline void led_sos_start(void)      {}
-static inline void led_sos_stop(void)       {}
-
-#endif /* CONFIG_IDF_TARGET_ESP32C3 */
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Training phase

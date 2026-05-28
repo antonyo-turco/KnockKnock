@@ -128,25 +128,17 @@ static void compute_signal_metrics(
         if (j > *jerk_max_out) *jerk_max_out = j;
     }
 
-    // ── FFT (Utilizzando fft_processor hardware) ────────────────────────────
-    
-    // Usiamo buffer statici per evitare allocazioni ad ogni chiamata.
-    // L'array vMag conterrà solo la metà dei bin (frequenze positive).
     static float vInput[FFT_SIZE];
     static float vMag[FFT_SIZE / 2];
 
-    // Copiamo il segnale in un array locale per due motivi:
-    // 1. Padding con zeri nel caso in cui size < FFT_SIZE
-    // 2. Il windowing (dsps_wind_hann_f32) all'interno di fft_processor altera
-    //    il buffer originale, e il nostro array 'signal' è const.
+    // fft_processor applies a Hann window in-place, so copy into vInput
+    // rather than passing signal[] directly.
     for (int i = 0; i < FFT_SIZE; ++i) {
         vInput[i] = (i < size) ? signal[i] : 0.0f;
     }
 
-    // Esegue la FFT e popola vMag con le magnitudo lineari
     fft_processor_compute_magnitude(vInput, vMag, FFT_SIZE);
 
-    // ── Assi delle Frequenze (calcolati una volta e messi in cache) ─────────
     static float freqs[FFT_SIZE / 2];
     static bool  freqs_ready = false;
     if (!freqs_ready) {
@@ -157,9 +149,7 @@ static void compute_signal_metrics(
     }
 
     const int n_bins = FFT_SIZE / 2;
-    
-    // ── Estrazione Feature in Frequenza ─────────────────────────────────────
-    // Ora passiamo l'array vMag che contiene i valori calcolati dall'acceleratore
+
     *band_1_5_out   = bandpower(freqs, vMag, n_bins,  1.0f,   5.0f);
     *band_5_20_out  = bandpower(freqs, vMag, n_bins,  5.0f,  20.0f);
     *band_20_40_out = bandpower(freqs, vMag, n_bins, 20.0f,  40.0f);
@@ -178,10 +168,8 @@ bool get_time_features(float *time_sin_out, float *time_cos_out) {
     time(&now);
     localtime_r(&now, &timeinfo);
     
-    // FIX #2: Log RTC sync status and return false if not synced
     if (timeinfo.tm_year < (2016 - 1900)) {
-        // RTC not synced yet — return neutral values (midnight)
-        ESP_LOGW(TAG, "RTC_NOT_SYNCED: Timestamp before 2016, using neutral time features (midnight)");
+        ESP_LOGW(TAG, "RTC not synced — using neutral time features (midnight)");
         *time_sin_out = 0.0f;
         *time_cos_out = 1.0f;
         return false;

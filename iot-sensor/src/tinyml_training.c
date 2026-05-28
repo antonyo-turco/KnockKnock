@@ -60,8 +60,6 @@ static void features_to_raw(const InferenceFeatures *f,
   out[10] = f->x_band_20_40;
   out[11] = f->y_band_20_40;
   out[12] = f->z_band_20_40;
-  // [13-16] band_40_100 — was missing, causing a 4-slot shift that wrote
-  // time_sin/time_cos and the last four z_top7 bins out of bounds.
   out[13] = f->m_band_40_100;
   out[14] = f->x_band_40_100;
   out[15] = f->y_band_40_100;

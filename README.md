@@ -70,7 +70,7 @@ Stay updated with our progress through our project log and presentations.
 | :--- | :--- | :--- |
 | **First Delivery** | First Delivery Presentation | [Presentation](https://github.com/antonyo-turco/iot-presentations/blob/9377e07d5346901678ff115f52adedeaf1f66225/1st-presentation/outputs/main.pdf) |
 | **Second Delivery** | Second Delivery Presentation<br>Detailed Design Document<br>Demo Video | [Presentation](https://github.com/antonyo-turco/KnockKnock/blob/main/Second%20delivery%20presentation.pdf)<br>[Report](https://github.com/antonyo-turco/KnockKnock/blob/main/iot-MD/2nd-delivery.MD)<br>[Video Demo](https://youtu.be/wBy7bFRrQwU) |
-| **Final Delivery** | Final Presentation Slides<br>End-to-End System Demo | [Presentation](https://github.com/antonyo-turco/KnockKnock/blob/main/Second%20delivery%20presentation.pdf)<br>[Video Demo](https://youtu.be/919C2gk2Hbs) |
+| **Final Delivery** | Final Presentation Slides<br>End-to-End System Demo | [Presentation](https://github.com/antonyo-turco/KnockKnock/blob/main/Final%20delivery%20presentation.pdf)<br>[Video Demo](https://youtu.be/919C2gk2Hbs) |
 
 ---
 

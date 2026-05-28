@@ -58,11 +58,22 @@ static const char *TAG = "MAIN";
 //  RTC memory — persists across deep sleep, reset to 0 on power-on
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Current ADXL362 activity threshold (mg). Adaptively tuned at runtime. */
-RTC_DATA_ATTR static uint16_t rtc_threshold_mg = THRESHOLD_MG;
+typedef struct {
+    float    lambda_ema;     /* smoothed wakeup rate (interrupts/sec)      */
+    int64_t  last_wake_sec;  /* epoch seconds of last sensor wakeup        */
+    uint16_t thresh_act;     /* current ADXL362 activity threshold (mg)    */
+    uint8_t  valid;          /* 0 on first boot, 1 after first wake cycle  */
+} rtc_state_t;
 
-/** Timestamp (seconds since epoch) of the last GPIO wakeup. */
-RTC_DATA_ATTR static int64_t rtc_last_sensor_wakeup_sec = 0;
+RTC_DATA_ATTR static rtc_state_t rtc_state = {
+    .lambda_ema    = LAMBDA_TARGET,
+    .last_wake_sec = 0,
+    .thresh_act    = THRESHOLD_MG,
+    .valid         = 0,
+};
+
+/** Debounce counter — incremented on each anomaly, reset after alarm. */
+RTC_DATA_ATTR static uint8_t rtc_alarm_counter = 0;
 
 /** True once hub MAC has been saved to NVS and pairing is confirmed. */
 RTC_DATA_ATTR static bool rtc_is_provisioned = false;
@@ -96,6 +107,38 @@ static EventGroupHandle_t s_main_event_group = NULL;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * @brief Update the EMA rate estimator and scale the activity threshold.
+ *
+ * @param now_sec   Current epoch time in seconds (from gettimeofday).
+ * @param update_ts If true, advance last_wake_sec to now_sec (sensor wakes
+ *                  only — timer wakes must NOT consume the quiet-period dt).
+ */
+static void ema_adapt_threshold(int64_t now_sec, bool update_ts) {
+    if (rtc_state.valid && rtc_state.last_wake_sec > 0) {
+        int64_t dt = now_sec - rtc_state.last_wake_sec;
+        if (dt > 0) {
+            float lambda_meas = 1.0f / (float)dt;
+            rtc_state.lambda_ema = ALPHA_EMA * lambda_meas
+                                 + (1.0f - ALPHA_EMA) * rtc_state.lambda_ema;
+            float scale = rtc_state.lambda_ema / LAMBDA_TARGET;
+            uint16_t t = (uint16_t)((float)rtc_state.thresh_act * scale);
+            if (t < THRESHOLD_MG_MIN) t = THRESHOLD_MG_MIN;
+            if (t > THRESHOLD_MG_MAX) t = THRESHOLD_MG_MAX;
+            rtc_state.thresh_act = t;
+            ESP_LOGI(TAG, "[THRESHOLD] λ_ema=%.5f  scale=%.3f  →  %u mg",
+                     rtc_state.lambda_ema, scale, rtc_state.thresh_act);
+        }
+    } else {
+        rtc_state.valid = 1;
+        ESP_LOGI(TAG, "[THRESHOLD] First wakeup — init threshold %u mg",
+                 rtc_state.thresh_act);
+    }
+    if (update_ts) {
+        rtc_state.last_wake_sec = now_sec;
+    }
+}
+
+/**
  * @brief Erase hub pairing data from NVS and flag the device as unprovisioned.
  *        Called when the hub requests a full reset.
  */
@@ -105,7 +148,11 @@ static void handle_hub_reset(void) {
   training_erase_nvs();
   rtc_is_provisioned = false;
   rtc_is_trained = false;
-  rtc_threshold_mg = THRESHOLD_MG;
+  rtc_alarm_counter = 0;
+  rtc_state.thresh_act    = THRESHOLD_MG;
+  rtc_state.lambda_ema    = LAMBDA_TARGET;
+  rtc_state.last_wake_sec = 0;
+  rtc_state.valid         = 0;
   esp_restart();
 }
 
@@ -116,10 +163,10 @@ static void handle_hub_reset(void) {
  */
 static void goto_deep_sleep(void) {
   ESP_LOGI(TAG, "Configuring deep sleep. ADXL362 threshold = %u mg",
-           rtc_threshold_mg);
+           rtc_state.thresh_act);
 
   if (g_sensor) {
-    adxl362_set_activity_threshold(g_sensor, rtc_threshold_mg, ACTIVITY_TIME_MS,
+    adxl362_set_activity_threshold(g_sensor, rtc_state.thresh_act, ACTIVITY_TIME_MS,
                                    true);
     // Stop then restart so the new threshold takes effect
     adxl362_stop_measurement(g_sensor);
@@ -384,30 +431,10 @@ static void ml_processor_task(void *arg) {
            feat.impact_score, feat.m_p99, dist, cluster,
            is_baseline ? "BASELINE" : "*** DEVIATION ***");
 
-  // ── Current time (for threshold adaptation) ───────────────────────────────
+  // ── EMA rate-based threshold adaptation ──────────────────────────────────
   struct timeval tv_now;
   gettimeofday(&tv_now, NULL);
-
-  int64_t delta_sec =
-      (rtc_last_sensor_wakeup_sec > 0)
-          ? (tv_now.tv_sec - rtc_last_sensor_wakeup_sec)
-          : (THRESHOLD_ADJUST_TIME_SEC + 1); // treat as "ok" on first event
-
-  if (delta_sec < THRESHOLD_ADJUST_TIME_SEC) {
-    // Waking up too frequently — raise threshold to reduce false wakes
-    rtc_threshold_mg = (uint16_t)(rtc_threshold_mg + THRESHOLD_STEP_UP);
-    if (rtc_threshold_mg > THRESHOLD_MG_MAX) {
-      rtc_threshold_mg = THRESHOLD_MG_MAX;
-    }
-    ESP_LOGW(TAG, "[THRESHOLD] Waking up too frequently (delta=%llds). Raised threshold to %u mg.",
-             (long long)delta_sec, rtc_threshold_mg);
-  } else {
-    ESP_LOGI(TAG, "[THRESHOLD] Normal timing (delta=%llds). Threshold kept at %u mg.",
-             (long long)delta_sec, rtc_threshold_mg);
-  }
-
-  // Remember when this wakeup happened (on every sensor event)
-  rtc_last_sensor_wakeup_sec = tv_now.tv_sec;
+  ema_adapt_threshold(tv_now.tv_sec, true);
 
   
 
@@ -643,14 +670,12 @@ void app_main(void) {
   else { // wakeup == ESP_SLEEP_WAKEUP_TIMER
     ESP_LOGI(TAG, "=== 24-H HUB SYNC ===");
 
-    // Gently lower threshold during timer sync (proves environment has been quiet)
-    if (rtc_threshold_mg > THRESHOLD_STEP_DOWN + THRESHOLD_MG_MIN) {
-      rtc_threshold_mg = (uint16_t)(rtc_threshold_mg - THRESHOLD_STEP_DOWN);
-    } else {
-      rtc_threshold_mg = THRESHOLD_MG_MIN;
+    // EMA decay: large dt since last sensor wake → λ_meas << λ_target → threshold drops
+    {
+      struct timeval tv_now;
+      gettimeofday(&tv_now, NULL);
+      ema_adapt_threshold(tv_now.tv_sec, false);
     }
-    ESP_LOGI(TAG, "[THRESHOLD] 24-h sync quiet period. Gently lowered threshold to %u mg.",
-             rtc_threshold_mg);
 
     ESP_ERROR_CHECK(hub_comm_init());
 

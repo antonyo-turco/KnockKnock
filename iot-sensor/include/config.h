@@ -33,14 +33,14 @@
 #define THRESHOLD_MG_MAX 170 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
-///  Adaptive threshold tuning
-///  If the sensor woke up within THRESHOLD_ADJUST_TIME_SEC of the last wakeup
-///  (= too often) → raise threshold by THRESHOLD_STEP_UP.
-///  Otherwise → lower it by THRESHOLD_STEP_DOWN (back to baseline sensitivity).
+///  EMA rate-based adaptive threshold
+///  LAMBDA_TARGET: target wakeup rate (interrupts/sec). 14/3600 ≈ 1% duty
+///                 cycle at the 2.56-second sampling window.
+///  ALPHA_EMA:     smoothing factor for the exponential moving average.
+///                 Lower = slower reaction; 0.2 tracks ~5-event rolling mean.
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_ADJUST_TIME_SEC 60 /* window for "waking too often" check */
-#define THRESHOLD_STEP_UP 10         /* mg to raise when too frequent       */
-#define THRESHOLD_STEP_DOWN 5        /* mg to lower when timing is normal   */
+#define LAMBDA_TARGET  (14.0f / 3600.0f) /* target rate: ~14 wakes/hr       */
+#define ALPHA_EMA       0.2f             /* EMA smoothing factor             */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Deep-sleep wakeup sources

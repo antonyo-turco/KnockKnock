@@ -118,4 +118,8 @@
                                 */
 #define MY_SPI_CLOCK 1000000   /* 1 MHz - reduced for debugging on breadboard */
 
+#ifdef CONFIG_IDF_TARGET_ESP32C3
+#define MY_PIN_LED GPIO_NUM_8  /* active-LOW internal LED on ESP32-C3 Super Mini */
+#endif
+
 #endif // CONFIG_H

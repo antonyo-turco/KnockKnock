@@ -9,16 +9,10 @@
 
 static const char *TAG_ML = "TINYML";
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Novelty buffer
-// ─────────────────────────────────────────────────────────────────────────────
-
 static float s_nov_buf[NOVELTY_BUFFER_SIZE][FEATURE_DIM];
 static int s_nov_count = 0;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
 
 static float safe_sqrt(float x) { return (x > 0.0f) ? sqrtf(x) : 0.0f; }
 
@@ -60,8 +54,6 @@ static void features_to_raw(const InferenceFeatures *f,
   out[10] = f->x_band_20_40;
   out[11] = f->y_band_20_40;
   out[12] = f->z_band_20_40;
-  // [13-16] band_40_100 — was missing, causing a 4-slot shift that wrote
-  // time_sin/time_cos and the last four z_top7 bins out of bounds.
   out[13] = f->m_band_40_100;
   out[14] = f->x_band_40_100;
   out[15] = f->y_band_40_100;
@@ -116,9 +108,7 @@ static int nearest_centroid_idx(const KMeansModel *model, const float nv[]) {
   return best;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Novelty buffer
-// ─────────────────────────────────────────────────────────────────────────────
+// Novelty buffer
 
 static int novelty_nearest(const float query[], float *out_dist) {
   int best_idx = 0;
@@ -151,9 +141,7 @@ static bool novelty_try_insert(const float norm_fv[]) {
   return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  K-Means++ seeding
-// ─────────────────────────────────────────────────────────────────────────────
+// K-Means++ seeding
 
 static void kmeans_pp_seed(KMeansModel *model) {
   memcpy(model->centroids[0], s_nov_buf[0], sizeof(float) * FEATURE_DIM);
@@ -185,9 +173,7 @@ static void kmeans_pp_seed(KMeansModel *model) {
       s_nov_count, KMEANS_K);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Public API
-// ─────────────────────────────────────────────────────────────────────────────
+// Public API
 
 void training_init(KMeansModel *model) {
   memset(model, 0, sizeof(KMeansModel));
@@ -196,7 +182,7 @@ void training_init(KMeansModel *model) {
   s_nov_count = 0;
 }
 
-// ── EXPLORING ────────────────────────────────────────────────────────────────
+// EXPLORING phase
 
 void exploring_update(KMeansModel *model, const InferenceFeatures *features) {
   float raw[FEATURE_DIM];
@@ -235,15 +221,13 @@ bool exploring_finalize(KMeansModel *model) {
   }
   kmeans_pp_seed(model);
 
-  // ── Compute adaptive ADXL362 threshold from existing Welford stats ────────
-  // norm_mean[1] and norm_std[1] are the Welford mean and std-dev of m_p99
-  // (feature index 1) accumulated across every window during EXPLORING.
-  // mean + 3σ covers ~99.7% of a normal distribution — good approximation
-  // of p99 for unimodal vibration magnitudes, and requires zero extra memory.
-  model->suggested_threshold_mg = model->norm_mean[5] + 1.0f * model->norm_std[5];
+  // Use mean(m_p99) + 3σ as the suggested wakeup threshold. m_p99 (index 1)
+  // measures peak vibration magnitude per window, so mean+3σ covers ~99.7%
+  // of normal activity and sets a tight hardware trigger above that baseline.
+  model->suggested_threshold_mg = model->norm_mean[1] + 3.0f * model->norm_std[1];
   ESP_LOGI(TAG_ML,
            "[EXPLORING] Adaptive threshold: mean(m_p99)=%.1f  std=%.1f"
-           "  → mean+3σ = %.1f mg  (over %lu windows)",
+           "  -> mean+3sigma = %.1f mg  (over %lu windows)",
            model->norm_mean[1], model->norm_std[1],
            model->suggested_threshold_mg,
            (unsigned long)model->total_samples);
@@ -255,7 +239,7 @@ uint8_t exploring_novelty_pct(void) {
   return (uint8_t)((s_nov_count * 100) / NOVELTY_BUFFER_SIZE);
 }
 
-// ── TRAINING ─────────────────────────────────────────────────────────────────
+// TRAINING phase
 
 void training_update(KMeansModel *model, const InferenceFeatures *features) {
   float raw[FEATURE_DIM];
@@ -295,7 +279,7 @@ void training_finalize(KMeansModel *model) {
   training_print_model(model);
 }
 
-// ── NVS ──────────────────────────────────────────────────────────────────────
+// NVS persistence
 
 static const char NVS_NS[] = "antitheft";
 static const char NVS_KEY[] = "kmeans";
@@ -360,7 +344,7 @@ void training_erase_nvs(void) {
   }
 }
 
-// ── INFERENCE ────────────────────────────────────────────────────────────────
+// Inference
 
 bool training_is_baseline(const KMeansModel *model,
                           const InferenceFeatures *features,
@@ -385,7 +369,7 @@ bool training_is_baseline(const KMeansModel *model,
   return dist <= model->dist_threshold[k];
 }
 
-// ── Debug print ──────────────────────────────────────────────────────────────
+// Debug print
 
 // 51 names — must stay in sync with features_to_raw() index assignments.
 // Layout: [0] impact_score  [1-4] p99  [5-8] jerk_max  [9-12] band_20_40
@@ -408,19 +392,15 @@ static const char *FEAT_NAMES[FEATURE_DIM] = {
 };
 
 void training_print_model(const KMeansModel *model) {
-  ESP_LOGI(TAG_ML, "╔══════════════════════════════════════════════╗");
-  ESP_LOGI(TAG_ML, "║     K-Means++ Model  (47-dim)                ║");
-  ESP_LOGI(TAG_ML, "╚══════════════════════════════════════════════╝");
-  ESP_LOGI(TAG_ML, "  K=%d  feat_dim=%d  total_samples=%lu", KMEANS_K,
-           FEATURE_DIM, (unsigned long)model->total_samples);
-  ESP_LOGI(TAG_ML, "  ── Normalisation ─────────────────────────────");
+  ESP_LOGI(TAG_ML, "K-Means++ model: K=%d  feat_dim=%d  samples=%lu",
+           KMEANS_K, FEATURE_DIM, (unsigned long)model->total_samples);
+  ESP_LOGI(TAG_ML, "Normalisation:");
   for (int d = 0; d < FEATURE_DIM; ++d)
     ESP_LOGI(TAG_ML, "  [%2d] %-12s  mean=%10.4f  std=%9.4f", d, FEAT_NAMES[d],
              model->norm_mean[d], model->norm_std[d]);
-  ESP_LOGI(TAG_ML, "  ── Centroids ─────────────────────────────────");
+  ESP_LOGI(TAG_ML, "Centroids:");
   for (int k = 0; k < KMEANS_K; ++k)
     ESP_LOGI(TAG_ML, "  C%d  n=%-6lu  dist_mean=%.4f  dist_max=%.4f  thr=%.4f",
              k, (unsigned long)model->centroid_counts[k], model->dist_mean[k],
              model->dist_max[k], model->dist_threshold[k]);
-  ESP_LOGI(TAG_ML, "══════════════════════════════════════════════");
 }

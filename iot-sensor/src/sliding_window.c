@@ -1,4 +1,5 @@
 #include "sliding_window.h"
+#include "config.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -70,7 +71,7 @@ int sliding_window_step(SlidingWindowState *state, float time_sin, float time_co
     InferenceFeatures feat = compute_features(
         window_x, window_y, window_z,
         WINDOW_SAMPLES,
-        200.0f,  // SAMPLING_RATE_HZ fixed to 200
+        SAMPLING_RATE_HZ,
         time_sin, time_cos
     );
     

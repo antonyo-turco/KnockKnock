@@ -8,9 +8,7 @@
 
 static const char *TAG = "FEATURE_EXTRACTION";
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
 
 static float safe_float(float v) {
     return (isnan(v) || isinf(v)) ? 0.0f : v;
@@ -104,15 +102,8 @@ static void top7_frequencies(const float magnitudes[], int n_bins,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Core per-signal metric computation
-//
-//  Computes all FFT-based and time-domain metrics for one signal vector of
-//  exactly SAMPLE_COUNT == FFT_SIZE elements (no zero-padding).
-//
-//  Outputs: p99, jerk_max, band_1_5, band_5_20, band_20_40, band_40_100, top7_freq[7]
-//  ZCR is computed separately (time-domain only, no FFT needed).
-// ─────────────────────────────────────────────────────────────────────────────
+// Computes FFT-based and time-domain metrics for one signal vector.
+// ZCR is computed separately in compute_features() (no FFT needed).
 
 static void compute_signal_metrics(
     const float signal[], int size, float sampling_rate_hz,
@@ -158,9 +149,7 @@ static void compute_signal_metrics(
     top7_frequencies(vMag, n_bins, sampling_rate_hz, top7_freq_out);
     }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Time helper
-// ─────────────────────────────────────────────────────────────────────────────
+// Time helper
 
 bool get_time_features(float *time_sin_out, float *time_cos_out) {
     time_t now;
@@ -181,9 +170,7 @@ bool get_time_features(float *time_sin_out, float *time_cos_out) {
     return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Public API
-// ─────────────────────────────────────────────────────────────────────────────
+// Public API
 
 InferenceFeatures compute_features(
     const int16_t x_values[],

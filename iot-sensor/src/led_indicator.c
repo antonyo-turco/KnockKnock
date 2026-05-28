@@ -11,8 +11,8 @@
 static esp_timer_handle_t s_train_blink_timer = NULL;
 static TaskHandle_t       s_sos_task_handle   = NULL;
 
-static inline void led_on(void)  { gpio_set_level(MY_PIN_LED, 0); }
-static inline void led_off(void) { gpio_set_level(MY_PIN_LED, 1); }
+static inline void led_on(void) { gpio_set_level(MY_PIN_LED, 0); }
+void led_off(void)               { gpio_set_level(MY_PIN_LED, 1); }
 
 static void train_blink_cb(void *arg) {
     static bool s = true;
@@ -80,6 +80,7 @@ void led_sos_stop(void) {
 
 #else
 
+void led_off(void)            {}
 void led_sos_start(void)      {}
 void led_sos_stop(void)       {}
 void led_training_start(void) {}

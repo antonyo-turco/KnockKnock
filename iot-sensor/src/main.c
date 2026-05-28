@@ -56,9 +56,7 @@
 
 static const char *TAG = "MAIN";
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  RTC memory — persists across deep sleep, reset to 0 on power-on
-// ─────────────────────────────────────────────────────────────────────────────
+// RTC memory — persists across deep sleep, reset to 0 on power-on
 
 typedef struct {
     float    lambda_ema;     /* smoothed wakeup rate (interrupts/sec)      */
@@ -85,9 +83,7 @@ RTC_DATA_ATTR static bool rtc_is_trained = false;
 
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Task inter-communication
-// ─────────────────────────────────────────────────────────────────────────────
+// Task inter-communication
 
 /** Shared sample buffers — written by sampler task, read by ML task. */
 static int16_t g_xb[SAMPLE_COUNT];
@@ -106,9 +102,7 @@ static EventGroupHandle_t s_main_event_group = NULL;
 /** Global sliding window state for continuous anomaly detection. */
 static SlidingWindowState g_window_state = {0};
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
 
 /**
  * @brief Update the EMA rate estimator and scale the activity threshold.
@@ -172,26 +166,18 @@ static void goto_deep_sleep(void) {
   if (g_sensor) {
     adxl362_set_activity_threshold(g_sensor, rtc_state.thresh_act, ACTIVITY_TIME_MS,
                                    true);
-    // Stop then restart so the new threshold takes effect
+    // Restart measurement so the new threshold register value takes effect
     adxl362_stop_measurement(g_sensor);
     adxl362_start_measurement(g_sensor);
-
-    // Wait for the sensor to settle and take a few samples
     vTaskDelay(pdMS_TO_TICKS(50));
-
-    // Clear any pending activity interrupt so we do not wake up immediately
+    // Read status to clear any pending activity interrupt before sleeping
     uint8_t dummy_status = 0;
     adxl362_get_status(g_sensor, &dummy_status);
   }
 
-  // Ensure Wi-Fi is stopped before deep sleep to prevent crashes/high power draw
   esp_wifi_stop();
-
-  // GPIO: ADXL362 INT1 line goes high on activity
   esp_deep_sleep_enable_gpio_wakeup(1ULL << MY_PIN_INT1,
                                     ESP_GPIO_WAKEUP_GPIO_HIGH);
-
-  // Timer: periodic 24-h hub sync
   esp_sleep_enable_timer_wakeup((uint64_t)SYNC_INTERVAL_SEC * 1000000ULL);
 
   led_sos_stop();
@@ -202,9 +188,7 @@ static void goto_deep_sleep(void) {
   // Never returns
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Training phase
-// ─────────────────────────────────────────────────────────────────────────────
+// Training phase
 
 /**
  * @brief Collect windows of accelerometer data and run them through the
@@ -230,7 +214,6 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   KMeansModel model;
   training_init(&model);
 
-  // ── Phase 1: EXPLORING ────────────────────────────────────────────────────
   ESP_LOGI(TAG, "--- EXPLORING ---");
   int64_t deadline_us = esp_timer_get_time() + (int64_t)exploring_ms * 1000LL;
   uint32_t win_seq = 0;
@@ -282,10 +265,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   }
   ESP_LOGI(TAG, "EXPLORING done after %lu windows.", (unsigned long)win_seq);
 
-  // ── Apply adaptive ADXL362 activity threshold ─────────────────────────────
-  // Use the p99 of the per-window m_p99 values collected during EXPLORING.
-  // This calibrates the hardware wakeup threshold to the actual vibration
-  // level of this specific installation, replacing the fixed default.
+  // Calibrate the hardware wakeup threshold to this installation's vibration level.
   if (model.suggested_threshold_mg > 0.0f) {
     uint16_t t = (uint16_t)model.suggested_threshold_mg;
     if (t < THRESHOLD_MG_MIN) t = THRESHOLD_MG_MIN;
@@ -303,7 +283,6 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
              rtc_state.thresh_act);
   }
 
-  // ── Phase 2: TRAINING ─────────────────────────────────────────────────────
   ESP_LOGI(TAG, "--- TRAINING ---");
   deadline_us = esp_timer_get_time() + (int64_t)training_ms * 1000LL;
   win_seq = 0;
@@ -347,7 +326,6 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   training_finalize(&model);
   ESP_LOGI(TAG, "TRAINING done after %lu windows.", (unsigned long)win_seq);
 
-  // ── Save to NVS ───────────────────────────────────────────────────────────
   if (training_save(&model)) {
     rtc_is_trained = true;
     ESP_LOGI(TAG, "Model saved to NVS. rtc_is_trained = true.");
@@ -358,9 +336,7 @@ static void run_training_phase(uint32_t exploring_ms, uint32_t training_ms) {
   led_training_stop();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Training task wrapper (for concurrent execution)
-// ─────────────────────────────────────────────────────────────────────────────
+// Training task wrapper (for concurrent execution)
 
 static void training_task_wrapper(void *arg) {
   run_training_phase(EXPLORING_DURATION_MS, TRAINING_DURATION_MS);
@@ -370,9 +346,7 @@ static void training_task_wrapper(void *arg) {
   vTaskDelete(NULL);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Sensor sampler task
-// ─────────────────────────────────────────────────────────────────────────────
+// Sensor sampler task
 
 /**
  * @brief Streams samples into the sliding window one at a time at
@@ -401,9 +375,7 @@ static void sensor_sampler_task(void *arg) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  ML processor task
-// ─────────────────────────────────────────────────────────────────────────────
+// ML processor task
 
 /**
  * @brief ML processor task — runs continuous sliding window inference.
@@ -514,9 +486,7 @@ static void ml_processor_task(void *arg) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Entry point
-// ─────────────────────────────────────────────────────────────────────────────
+// Entry point
 
 void app_main(void) {
 #if CONFIG_IDF_TARGET_ESP32C3
@@ -546,14 +516,12 @@ void app_main(void) {
     esp_restart();
   }
 
-  // ── Init FFT workspace ────────────────────────────────────────────────────
   if (fft_processor_init(FFT_SIZE) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize FFT processor.");
     vTaskDelay(pdMS_TO_TICKS(5000));
     esp_restart();
   }
 
-  // ── Restore RTC flags from NVS after a power cut ──────────────────────────
   // RTC_DATA_ATTR memory survives deep sleep but is zeroed on power-on reset.
   // Restore the flags with lightweight NVS probes (blob-size checks only).
   // The full model is loaded later, inside ml_processor_task, only when
@@ -562,9 +530,8 @@ void app_main(void) {
   {
     nvs_handle_t _nvs;
 
-    // ── rtc_is_trained: check that the "kmeans" blob exists and is the right
-    //    size — training_save() only writes a finalised model, so size match
-    //    is sufficient proof that a valid model is present.
+    // training_save() only writes a finalised model, so size match is proof
+    // that a valid model exists without loading the full 3 KB blob.
     if (!rtc_is_trained &&
         nvs_open("antitheft", NVS_READONLY, &_nvs) == ESP_OK) {
       size_t _len = 0;
@@ -577,8 +544,6 @@ void app_main(void) {
       nvs_close(_nvs);
     }
 
-    // ── rtc_is_provisioned: check that the hub_mac blob (6 bytes) exists.
-    //    No WiFi/ESP-NOW initialisation needed for this check.
     if (!rtc_is_provisioned &&
         nvs_open("storage", NVS_READONLY, &_nvs) == ESP_OK) {
       size_t _len = 0;
@@ -590,25 +555,18 @@ void app_main(void) {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════════════
-  //  PATH A — First boot / manual reset
-  // ═════════════════════════════════════════════════════════════════════════
+  // PATH A — first boot / manual reset
   if (wakeup != ESP_SLEEP_WAKEUP_GPIO && wakeup != ESP_SLEEP_WAKEUP_TIMER) {
     ESP_LOGI(TAG, "=== FIRST BOOT / RESET ===");
 
-    // ── Step 1: Init hub comms (Wi-Fi & ESP-NOW) ──────────────────────────
     ESP_ERROR_CHECK(hub_comm_init());
 
-    // ── Print MAC Address ─────────────────────────────────────────────────────
     uint8_t base_mac[6];
     if (esp_wifi_get_mac(WIFI_IF_STA, base_mac) == ESP_OK) {
-      ESP_LOGI(TAG, "========================================");
-      ESP_LOGI(TAG, " SENSOR MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X",
+      ESP_LOGI(TAG, "SENSOR MAC: %02X:%02X:%02X:%02X:%02X:%02X",
                base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
-      ESP_LOGI(TAG, "========================================");
     }
 
-    // ── Step 2 & 4 Concurrent: Pairing & Training ───────────────────────
     bool wait_for_training = false;
 
     // Start training in background if needed (e.g. first boot)
@@ -635,7 +593,6 @@ void app_main(void) {
       ESP_LOGI(TAG, "Already provisioned — skipping pairing.");
     }
 
-    // ── Step 3: Sync clock + query hub for instructions ───────────────────
     hub_info_t info;
     bool got_info = hub_comm_get_information(&info, 5000, 3);
 
@@ -659,14 +616,11 @@ void app_main(void) {
       ESP_LOGI(TAG, "Background ML training task completed.");
     }
 
-    // ── Step 5: Deep sleep ────────────────────────────────────────────────
     goto_deep_sleep();
     // Never returns
   }
 
-  // ═════════════════════════════════════════════════════════════════════════
-  //  PATH B — Sensor wakeup (ADXL362 activity interrupt)
-  // ═════════════════════════════════════════════════════════════════════════
+  // PATH B — sensor wakeup (ADXL362 activity interrupt)
   else if (wakeup == ESP_SLEEP_WAKEUP_GPIO) {
     ESP_LOGI(TAG, "=== SENSOR WAKEUP (knock detected) ===");
 
@@ -693,9 +647,7 @@ void app_main(void) {
     vTaskSuspend(NULL);
   }
 
-  // ═════════════════════════════════════════════════════════════════════════
-  //  PATH C — Timer wakeup (24-h hub sync)
-  // ═════════════════════════════════════════════════════════════════════════
+  // PATH C — timer wakeup (24-h hub sync)
   else { // wakeup == ESP_SLEEP_WAKEUP_TIMER
     ESP_LOGI(TAG, "=== 24-H HUB SYNC ===");
 

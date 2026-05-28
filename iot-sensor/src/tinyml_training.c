@@ -9,16 +9,10 @@
 
 static const char *TAG_ML = "TINYML";
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Novelty buffer
-// ─────────────────────────────────────────────────────────────────────────────
-
 static float s_nov_buf[NOVELTY_BUFFER_SIZE][FEATURE_DIM];
 static int s_nov_count = 0;
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Internal helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers
 
 static float safe_sqrt(float x) { return (x > 0.0f) ? sqrtf(x) : 0.0f; }
 
@@ -114,9 +108,7 @@ static int nearest_centroid_idx(const KMeansModel *model, const float nv[]) {
   return best;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Novelty buffer
-// ─────────────────────────────────────────────────────────────────────────────
+// Novelty buffer
 
 static int novelty_nearest(const float query[], float *out_dist) {
   int best_idx = 0;
@@ -149,9 +141,7 @@ static bool novelty_try_insert(const float norm_fv[]) {
   return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  K-Means++ seeding
-// ─────────────────────────────────────────────────────────────────────────────
+// K-Means++ seeding
 
 static void kmeans_pp_seed(KMeansModel *model) {
   memcpy(model->centroids[0], s_nov_buf[0], sizeof(float) * FEATURE_DIM);
@@ -183,9 +173,7 @@ static void kmeans_pp_seed(KMeansModel *model) {
       s_nov_count, KMEANS_K);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Public API
-// ─────────────────────────────────────────────────────────────────────────────
+// Public API
 
 void training_init(KMeansModel *model) {
   memset(model, 0, sizeof(KMeansModel));
@@ -194,7 +182,7 @@ void training_init(KMeansModel *model) {
   s_nov_count = 0;
 }
 
-// ── EXPLORING ────────────────────────────────────────────────────────────────
+// EXPLORING phase
 
 void exploring_update(KMeansModel *model, const InferenceFeatures *features) {
   float raw[FEATURE_DIM];
@@ -251,7 +239,7 @@ uint8_t exploring_novelty_pct(void) {
   return (uint8_t)((s_nov_count * 100) / NOVELTY_BUFFER_SIZE);
 }
 
-// ── TRAINING ─────────────────────────────────────────────────────────────────
+// TRAINING phase
 
 void training_update(KMeansModel *model, const InferenceFeatures *features) {
   float raw[FEATURE_DIM];
@@ -291,7 +279,7 @@ void training_finalize(KMeansModel *model) {
   training_print_model(model);
 }
 
-// ── NVS ──────────────────────────────────────────────────────────────────────
+// NVS persistence
 
 static const char NVS_NS[] = "antitheft";
 static const char NVS_KEY[] = "kmeans";
@@ -356,7 +344,7 @@ void training_erase_nvs(void) {
   }
 }
 
-// ── INFERENCE ────────────────────────────────────────────────────────────────
+// Inference
 
 bool training_is_baseline(const KMeansModel *model,
                           const InferenceFeatures *features,
@@ -381,7 +369,7 @@ bool training_is_baseline(const KMeansModel *model,
   return dist <= model->dist_threshold[k];
 }
 
-// ── Debug print ──────────────────────────────────────────────────────────────
+// Debug print
 
 // 51 names — must stay in sync with features_to_raw() index assignments.
 // Layout: [0] impact_score  [1-4] p99  [5-8] jerk_max  [9-12] band_20_40

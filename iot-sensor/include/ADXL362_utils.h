@@ -9,7 +9,7 @@ static const char *TAG1 = "ADXL362_UTILS";
 /* =========================================================
  *  Helper: configure the ADXL362 and start measurement
  * ========================================================= */
-static adxl362_handle_t sensor_init(void) {
+static adxl362_handle_t sensor_init(float frequency_hz) {
   adxl362_handle_t sensor = NULL;
 
   adxl362_pins_t pins = {
@@ -29,6 +29,21 @@ static adxl362_handle_t sensor_init(void) {
   }
 
   adxl362_set_range(sensor, ADXL362_RANGE_2G);
+
+
+  switch ((int)frequency_hz) {
+    case 12: adxl362_set_odr(sensor, ADXL362_ODR_12_5_HZ); break;
+    case 25: adxl362_set_odr(sensor, ADXL362_ODR_25_HZ); break;
+    case 50: adxl362_set_odr(sensor, ADXL362_ODR_50_HZ); break;
+    case 100: adxl362_set_odr(sensor, ADXL362_ODR_100_HZ); break;
+    case 200: adxl362_set_odr(sensor, ADXL362_ODR_200_HZ); break;
+    case 400: adxl362_set_odr(sensor, ADXL362_ODR_400_HZ); break;
+    default:
+      ESP_LOGW(TAG1, "Unsupported ODR %d Hz - defaulting to 100 Hz", (int)frequency_hz);
+      adxl362_set_odr(sensor, ADXL362_ODR_100_HZ);
+      frequency_hz = 100;
+      break;
+  }
   adxl362_set_odr(sensor, ADXL362_ODR_100_HZ);
 
   adxl362_set_activity_threshold(sensor, THRESHOLD_MG, ACTIVITY_TIME_MS, true);

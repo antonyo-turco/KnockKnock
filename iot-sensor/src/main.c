@@ -81,8 +81,7 @@ RTC_DATA_ATTR static bool rtc_is_provisioned = false;
 /** True once a model has been trained and saved to NVS. */
 RTC_DATA_ATTR static bool rtc_is_trained = false;
 
-/** Counter for consecutive anomalies before raising an alarm. */
-RTC_DATA_ATTR static uint8_t rtc_alarm_counter = 0;
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Task inter-communication
@@ -101,6 +100,14 @@ static adxl362_handle_t g_sensor = NULL;
 
 static EventGroupHandle_t s_main_event_group = NULL;
 #define EVENT_TRAINING_DONE (1 << 0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Forward declarations for LED helpers (defined after goto_deep_sleep)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void led_sos_stop(void);
+static void led_training_stop(void);
+static inline void led_off(void);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Internal helpers
@@ -603,7 +610,7 @@ void app_main(void) {
   esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
 
   // ── Sensor init (needed in all paths) ─────────────────────────────────────
-  g_sensor = sensor_init();
+  g_sensor = sensor_init(SAMPLING_RATE_HZ);
   if (!g_sensor) {
     ESP_LOGE(TAG, "ADXL362 initialisation failed. Retrying in 5 s...");
     vTaskDelay(pdMS_TO_TICKS(5000));
@@ -693,7 +700,7 @@ void app_main(void) {
       }
       // hub_comm_pair() saved the MAC to NVS internally
       rtc_is_provisioned = true;
-      rtc_threshold_mg = THRESHOLD_MG;
+      rtc_state.thresh_act = THRESHOLD_MG;
       ESP_LOGI(TAG, "Pairing successful. Device is now provisioned.");
     } else {
       ESP_LOGI(TAG, "Already provisioned — skipping pairing.");

@@ -235,15 +235,13 @@ bool exploring_finalize(KMeansModel *model) {
   }
   kmeans_pp_seed(model);
 
-  // ── Compute adaptive ADXL362 threshold from existing Welford stats ────────
-  // norm_mean[1] and norm_std[1] are the Welford mean and std-dev of m_p99
-  // (feature index 1) accumulated across every window during EXPLORING.
-  // mean + 3σ covers ~99.7% of a normal distribution — good approximation
-  // of p99 for unimodal vibration magnitudes, and requires zero extra memory.
-  model->suggested_threshold_mg = model->norm_mean[5] + 1.0f * model->norm_std[5];
+  // Use mean(m_p99) + 3σ as the suggested wakeup threshold. m_p99 (index 1)
+  // measures peak vibration magnitude per window, so mean+3σ covers ~99.7%
+  // of normal activity and sets a tight hardware trigger above that baseline.
+  model->suggested_threshold_mg = model->norm_mean[1] + 3.0f * model->norm_std[1];
   ESP_LOGI(TAG_ML,
            "[EXPLORING] Adaptive threshold: mean(m_p99)=%.1f  std=%.1f"
-           "  → mean+3σ = %.1f mg  (over %lu windows)",
+           "  -> mean+3sigma = %.1f mg  (over %lu windows)",
            model->norm_mean[1], model->norm_std[1],
            model->suggested_threshold_mg,
            (unsigned long)model->total_samples);
@@ -408,19 +406,15 @@ static const char *FEAT_NAMES[FEATURE_DIM] = {
 };
 
 void training_print_model(const KMeansModel *model) {
-  ESP_LOGI(TAG_ML, "╔══════════════════════════════════════════════╗");
-  ESP_LOGI(TAG_ML, "║     K-Means++ Model  (47-dim)                ║");
-  ESP_LOGI(TAG_ML, "╚══════════════════════════════════════════════╝");
-  ESP_LOGI(TAG_ML, "  K=%d  feat_dim=%d  total_samples=%lu", KMEANS_K,
-           FEATURE_DIM, (unsigned long)model->total_samples);
-  ESP_LOGI(TAG_ML, "  ── Normalisation ─────────────────────────────");
+  ESP_LOGI(TAG_ML, "K-Means++ model: K=%d  feat_dim=%d  samples=%lu",
+           KMEANS_K, FEATURE_DIM, (unsigned long)model->total_samples);
+  ESP_LOGI(TAG_ML, "Normalisation:");
   for (int d = 0; d < FEATURE_DIM; ++d)
     ESP_LOGI(TAG_ML, "  [%2d] %-12s  mean=%10.4f  std=%9.4f", d, FEAT_NAMES[d],
              model->norm_mean[d], model->norm_std[d]);
-  ESP_LOGI(TAG_ML, "  ── Centroids ─────────────────────────────────");
+  ESP_LOGI(TAG_ML, "Centroids:");
   for (int k = 0; k < KMEANS_K; ++k)
     ESP_LOGI(TAG_ML, "  C%d  n=%-6lu  dist_mean=%.4f  dist_max=%.4f  thr=%.4f",
              k, (unsigned long)model->centroid_counts[k], model->dist_mean[k],
              model->dist_max[k], model->dist_threshold[k]);
-  ESP_LOGI(TAG_ML, "══════════════════════════════════════════════");
 }

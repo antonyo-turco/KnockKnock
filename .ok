@@ -3,14 +3,25 @@
 # PlatformIO is not on PATH; use the full binary:
 #   Windows: C:\Users\anton\.platformio\penv\Scripts\pio.exe
 #   Git Bash: /c/Users/anton/.platformio/penv/Scripts/pio.exe
+#
+# All ESP32-C3 projects emit: "Flash memory size mismatch detected. Expected 4MB, found 2MB!"
+# This is non-fatal — the build succeeds. Reconcile in sdkconfig.defaults if it causes flash issues.
 
 # sensor (ESP32-C3 Super Mini)
 # Prereq: sensor/components/fft_lib/CMakeLists.txt must exist (was missing, now added)
+# Flash: ~83% of 1MB partition | RAM: ~29%
 cd sensor && pio run -e c3
 
 # edge-hub (ESP32-C3)
 # Prereq: sdkconfig.c3 must have CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=5 (not 6, which is out of range for C3)
+# Flash: ~68% of 1.5MB partition | RAM: ~10%
 cd edge-hub && pio run -e c3
 
+# gateway (ESP32-C3 DevKitM-1)
+# Prereq: gateway/include/secrets.h must exist (tracked in repo, not git-ignored)
+# Flash: ~51% of 1.5MB partition | RAM: ~9%
+cd gateway && pio run -e c3
+
 # cloud-infrastructure (Docker)
+# Prereq: Docker Desktop must be running (Linux engine must be initialized)
 cd cloud-infrastructure && docker compose up -d

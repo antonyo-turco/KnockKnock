@@ -17,7 +17,7 @@
 #define SAMPLING_RATE_HZ 200.0f
 #define SAMPLE_PERIOD_MS 5
 #define NOVELTY_BUFFER_SIZE 200
-#define MIN_CONSECUTIVE 2
+#define MIN_CONSECUTIVE 1
 #define WAKEUP_THRESHOLD_DEFAULT 14
 #define NOVELTY_THRESHOLD 1.5f
 
@@ -28,9 +28,9 @@
 ///  THRESHOLD_MG_MIN: never go below this (too sensitive → false triggers)
 ///  THRESHOLD_MG_MAX: never go above this (too insensitive → misses knocks)
 /// ─────────────────────────────────────────────────────────────────────────────
-#define THRESHOLD_MG 50     /* 0.150g — good for table knocks            */
-#define THRESHOLD_MG_MIN 75  /* floor: very sensitive                     */
-#define THRESHOLD_MG_MAX 100 /* ceiling: very insensitive                 */
+#define THRESHOLD_MG 150     /* 0.150g — good for table knocks            */
+#define THRESHOLD_MG_MIN 150  /* floor: very sensitive                     */
+#define THRESHOLD_MG_MAX 170 /* ceiling: very insensitive                 */
 
 /// ─────────────────────────────────────────────────────────────────────────────
 ///  Adaptive threshold tuning

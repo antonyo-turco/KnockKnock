@@ -155,6 +155,7 @@ static void buzzer_init(void) {
     gpio_set_level(BUZZER_PIN, 0);
 }
 
+#ifndef BUZZER_LOW
 static void activate_buzzer(void) {
     ESP_LOGI(TAG, "Activating buzzer!");
     for (int i = 0; i < 10; ++i) { //250 ms * 10 = 2.5 seconds total buzzing
@@ -164,6 +165,16 @@ static void activate_buzzer(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
+#else
+static void activate_buzzer(void) {
+    ESP_LOGI(TAG, "Activating buzzer!");
+    gpio_set_level(BUZZER_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    gpio_set_level(BUZZER_PIN, 0);
+}
+#endif
+
+
 
 static void hub_publish_device_list_to_cloud(void) {
     cJSON *resp = cJSON_CreateObject();

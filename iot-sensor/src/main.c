@@ -125,10 +125,16 @@ static void goto_deep_sleep(void) {
     adxl362_stop_measurement(g_sensor);
     adxl362_start_measurement(g_sensor);
 
+    // Wait for the sensor to settle and take a few samples
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     // Clear any pending activity interrupt so we do not wake up immediately
     uint8_t dummy_status = 0;
     adxl362_get_status(g_sensor, &dummy_status);
   }
+
+  // Ensure Wi-Fi is stopped before deep sleep to prevent crashes/high power draw
+  esp_wifi_stop();
 
   // GPIO: ADXL362 INT1 line goes high on activity
   esp_deep_sleep_enable_gpio_wakeup(1ULL << MY_PIN_INT1,

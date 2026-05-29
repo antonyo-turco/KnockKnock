@@ -1,3 +1,27 @@
+/*
+ * feature_extraction.c
+ *
+ * Trasforma una finestra di WINDOW_SAMPLES campioni XYZ grezzi (int16, mg)
+ * in un vettore di 51 feature float pronto per il classificatore k-means.
+ *
+ * Differenza rispetto a sensor-standalone: la FFT opera su FFT_SIZE=512 punti
+ * con zero-padding dai 256 campioni reali. Questo non aggiunge informazione
+ * spettrale reale, ma interpola i bin aumentando la risoluzione in frequenza:
+ *   sensor/            : 256 campioni + 256 zeri → FFT 512pt → 0.39 Hz/bin
+ *   sensor-standalone  : 256 campioni             → FFT 256pt → 0.78 Hz/bin
+ * I range delle bande e la logica di calcolo sono identici.
+ *
+ * Pipeline per ogni finestra:
+ *   1. Calcola magnitudine m = sqrt(x²+y²+z²) per ogni campione
+ *   2. Per ciascuno dei 4 segnali (m, x, y, z):
+ *        – p99         : 99° percentile di |segnale|
+ *        – jerk_max    : max variazione campione-per-campione
+ *        – FFT (Hann)  → potenze per 4 bande + 7 frequenze dominanti
+ *   3. ZCR (zero-crossing rate) per x, y, z
+ *   4. impact_score: punteggio composito [0,1] per knock impulsivi
+ *   5. time_sin / time_cos: encoding circolare dell'ora (da RTC sincronizzato via hub)
+ */
+
 #include "feature_extraction.h"
 #include <math.h>
 #include <float.h>
@@ -8,17 +32,21 @@
 
 static const char *TAG = "FEATURE_EXTRACTION";
 
-// Helpers
-
+/* Rimpiazza NaN/Inf con 0 — evita che valori garbage corrompano la distanza k-means. */
 static float safe_float(float v) {
     return (isnan(v) || isinf(v)) ? 0.0f : v;
 }
 
-// 99th percentile of |values[0..size-1]|.
-// Uses insertion sort on a static buffer — O(n²), fine for n=512.
+/*
+ * 99° percentile di |values[0..size-1]|.
+ * Misura l'ampiezza di picco del segnale escludendo l'1% di outlier estremi.
+ * Utile per stimare l'orientazione (componente DC della gravità su ogni asse)
+ * e l'intensità di un knock senza essere distorto da un singolo spike.
+ * Complessità O(n²) con insertion sort — accettabile per n=256.
+ */
 static float percentile_99(const float values[], int size) {
     if (size <= 0) return 0.0f;
-    static float sorted[SAMPLE_COUNT];
+    static float sorted[WINDOW_SAMPLES];
     for (int i = 0; i < size; ++i) sorted[i] = fabsf(values[i]);
     for (int i = 1; i < size; ++i) {
         float key = sorted[i];
@@ -31,7 +59,12 @@ static float percentile_99(const float values[], int size) {
     return sorted[idx];
 }
 
-// Zero-crossing rate: fraction of consecutive pairs that change sign.
+/*
+ * Zero-crossing rate: frazione di coppie consecutive che cambiano segno.
+ * Alta ZCR → segnale oscillante ad alta frequenza (vibrazioni meccaniche).
+ * Bassa ZCR → segnale quasi-DC (gravità statica, movimento lento).
+ * Utile per distinguere knock (alta ZCR) da semplice spostamento (bassa ZCR).
+ */
 static float compute_zcr(const float signal[], int size) {
     if (size < 2) return 0.0f;
     int crossings = 0;
@@ -41,7 +74,15 @@ static float compute_zcr(const float signal[], int size) {
     return (float)crossings / (float)(size - 1);
 }
 
-// Trapezoidal band-power integration over [low, high) Hz.
+/*
+ * Potenza di banda tramite integrazione trapezoidale dello spettro di potenza
+ * nell'intervallo [low, high) Hz.
+ * Distingue quali bande di frequenza contengono più energia:
+ *   1-5 Hz   → movimento lento / componente DC della gravità
+ *   5-20 Hz  → vibrazioni strutturali a bassa frequenza
+ *   20-40 Hz → knock tipici su porte/finestre
+ *   40-100 Hz→ vibrazioni ad alta frequenza, metallo, vetro
+ */
 static float bandpower(const float freqs[], const float power[],
                        int n, float low, float high) {
     float result = 0.0f;
@@ -53,19 +94,24 @@ static float bandpower(const float freqs[], const float power[],
     return safe_float(result);
 }
 
-// Find the TOP7_COUNT bins (excluding DC bin 0) with highest magnitude,
-// convert to Hz, and return them sorted ascending by frequency.
+/*
+ * Trova i TOP7_COUNT bin FFT con magnitudine più alta (esclude il DC, bin 0)
+ * e li converte in Hz ordinati in modo crescente.
+ * Le frequenze dominanti caratterizzano la firma spettrale di un evento:
+ * un knock su legno ha picchi diversi da un knock su metallo.
+ * Algoritmo: top-k con heap implicito da 7 elementi, O(n) scansione.
+ */
 static void top7_frequencies(const float magnitudes[], int n_bins,
                               float sampling_rate_hz, float out[TOP7_COUNT]) {
-    // Initialise with first TOP7_COUNT non-DC bins
     int   top_idx[TOP7_COUNT];
     float top_mag[TOP7_COUNT];
-    int   start = (n_bins > TOP7_COUNT) ? TOP7_COUNT : n_bins - 1;
+    /* Inizializza con i primi TOP7_COUNT bin non-DC (bin 1..7) */
+    int start = (n_bins > TOP7_COUNT) ? TOP7_COUNT : n_bins - 1;
     for (int i = 0; i < TOP7_COUNT; ++i) {
-        top_idx[i] = i + 1;                // skip bin 0 (DC)
+        top_idx[i] = i + 1;
         top_mag[i] = (i + 1 < n_bins) ? magnitudes[i + 1] : 0.0f;
     }
-    // Keep top_mag sorted descending for efficient updates
+    /* Ordina discrescente per magnitudine (selection sort su 7 elementi) */
     for (int i = 0; i < TOP7_COUNT - 1; ++i) {
         for (int j = i + 1; j < TOP7_COUNT; ++j) {
             if (top_mag[j] > top_mag[i]) {
@@ -74,12 +120,11 @@ static void top7_frequencies(const float magnitudes[], int n_bins,
             }
         }
     }
-    // Scan remaining bins
+    /* Scansione del resto: sostituisce il minimo corrente se trova un bin più grande */
     for (int i = start + 1; i < n_bins; ++i) {
         if (magnitudes[i] > top_mag[TOP7_COUNT - 1]) {
             top_mag[TOP7_COUNT - 1] = magnitudes[i];
             top_idx[TOP7_COUNT - 1] = i;
-            // Bubble up to maintain descending order
             for (int j = TOP7_COUNT - 2; j >= 0; --j) {
                 if (top_mag[j + 1] > top_mag[j]) {
                     float tm = top_mag[j]; top_mag[j] = top_mag[j+1]; top_mag[j+1] = tm;
@@ -88,12 +133,12 @@ static void top7_frequencies(const float magnitudes[], int n_bins,
             }
         }
     }
-    // Convert to Hz
-    float bin_hz = sampling_rate_hz / (float)(n_bins * 2);  // n_bins = FFT_SIZE/2
+    /* Converti indici bin → Hz e riordina ascendente per frequenza.
+     * bin_hz = fs / FFT_SIZE = 200/512 = 0.39 Hz/bin (con zero-padding) */
+    float bin_hz = sampling_rate_hz / (float)(n_bins * 2);
     for (int i = 0; i < TOP7_COUNT; ++i) {
         out[i] = top_idx[i] * bin_hz;
     }
-    // Sort ascending by frequency (simple insertion sort on 7 elements)
     for (int i = 1; i < TOP7_COUNT; ++i) {
         float key = out[i];
         int   j   = i - 1;
@@ -102,33 +147,46 @@ static void top7_frequencies(const float magnitudes[], int n_bins,
     }
 }
 
-// Computes FFT-based and time-domain metrics for one signal vector.
-// ZCR is computed separately in compute_features() (no FFT needed).
-
+/*
+ * Calcola tutte le metriche FFT e temporali per un singolo segnale scalare.
+ * Chiamata 4 volte per compute_features(): su m, x, y, z separatamente.
+ *
+ * Zero-padding: i 256 campioni reali vengono copiati in vInput[0..255],
+ * vInput[256..511] rimane a zero. La FFT a 512 punti interpola lo spettro
+ * aumentando la risoluzione in frequenza (0.39 Hz/bin vs 0.78 Hz/bin).
+ *
+ * La finestra di Hann è applicata da fft_processor_compute_magnitude()
+ * in-place su vInput — per questo si copia signal[] invece di passarlo
+ * direttamente (evitare di modificare il buffer originale).
+ */
 static void compute_signal_metrics(
     const float signal[], int size, float sampling_rate_hz,
     float *p99_out, float *jerk_max_out,
     float *band_1_5_out, float *band_5_20_out, float *band_20_40_out, float *band_40_100_out,
     float top7_freq_out[TOP7_COUNT])
-    {
+{
     *p99_out      = percentile_99(signal, size);
+
+    /* jerk_max: massima variazione assoluta tra campioni consecutivi.
+     * Immune alla componente DC (gravità costante → derivata ≈ 0).
+     * È la metrica principale per rilevare impulsi bruschi come i knock. */
     *jerk_max_out = 0.0f;
     for (int i = 1; i < size; ++i) {
         float j = fabsf(signal[i] - signal[i - 1]);
         if (j > *jerk_max_out) *jerk_max_out = j;
     }
 
-    static float vInput[FFT_SIZE];
-    static float vMag[FFT_SIZE / 2];
+    static float vInput[FFT_SIZE]; /* buffer FFT: 256 campioni + 256 zeri */
+    static float vMag[FFT_SIZE / 2]; /* magnitudini lineari: bin 0..255 */
 
-    // fft_processor applies a Hann window in-place, so copy into vInput
-    // rather than passing signal[] directly.
     for (int i = 0; i < FFT_SIZE; ++i) {
         vInput[i] = (i < size) ? signal[i] : 0.0f;
     }
 
+    /* FFT radix-2 con finestra Hann → magnitudini in vMag[0..FFT_SIZE/2-1] */
     fft_processor_compute_magnitude(vInput, vMag, FFT_SIZE);
 
+    /* Array frequenze calcolato una volta sola — freqs[i] = i * fs/FFT_SIZE Hz */
     static float freqs[FFT_SIZE / 2];
     static bool  freqs_ready = false;
     if (!freqs_ready) {
@@ -138,24 +196,30 @@ static void compute_signal_metrics(
         freqs_ready = true;
     }
 
-    const int n_bins = FFT_SIZE / 2;
+    const int n_bins = FFT_SIZE / 2; /* 256 bin, da 0 a 99.61 Hz */
 
-    *band_1_5_out   = bandpower(freqs, vMag, n_bins,  1.0f,   5.0f);
-    *band_5_20_out  = bandpower(freqs, vMag, n_bins,  5.0f,  20.0f);
-    *band_20_40_out = bandpower(freqs, vMag, n_bins, 20.0f,  40.0f);
+    *band_1_5_out    = bandpower(freqs, vMag, n_bins,  1.0f,   5.0f);
+    *band_5_20_out   = bandpower(freqs, vMag, n_bins,  5.0f,  20.0f);
+    *band_20_40_out  = bandpower(freqs, vMag, n_bins, 20.0f,  40.0f);
     *band_40_100_out = bandpower(freqs, vMag, n_bins, 40.0f, 100.0f);
 
     top7_frequencies(vMag, n_bins, sampling_rate_hz, top7_freq_out);
-    }
+}
 
-// Time helper
-
+/*
+ * Converte l'ora corrente del RTC in coordinate circolari (sin/cos).
+ * L'encoding circolare evita la discontinuità 23:59→00:01 che romperebbe
+ * la distanza euclidea nel feature space (sin(-1°) ≈ sin(359°)).
+ * Entrambi i valori sono necessari: sin da solo è ambiguo
+ * (mattina e pomeriggio hanno lo stesso sin).
+ * Restituisce false se il RTC non è sincronizzato (anno < 2016).
+ */
 bool get_time_features(float *time_sin_out, float *time_cos_out) {
     time_t now;
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
-    
+
     if (timeinfo.tm_year < (2016 - 1900)) {
         ESP_LOGW(TAG, "RTC not synced — using neutral time features (midnight)");
         *time_sin_out = 0.0f;
@@ -169,8 +233,14 @@ bool get_time_features(float *time_sin_out, float *time_cos_out) {
     return true;
 }
 
-// Public API
-
+/*
+ * Punto di ingresso pubblico: calcola il vettore completo di 51 feature
+ * da una finestra di WINDOW_SAMPLES campioni XYZ.
+ *
+ * time_sin / time_cos sono passati dal chiamante (main.c) per mantenere
+ * questo modulo indipendente dallo stato WiFi/RTC.
+ * Valore neutro quando RTC non sincronizzato: sin=0, cos=1 (mezzanotte).
+ */
 InferenceFeatures compute_features(
     const int16_t x_values[],
     const int16_t y_values[],
@@ -183,11 +253,13 @@ InferenceFeatures compute_features(
     InferenceFeatures feat = {0};
     if (size <= 0) return feat;
 
-    static float mag_m[SAMPLE_COUNT];
-    static float mag_x[SAMPLE_COUNT];
-    static float mag_y[SAMPLE_COUNT];
-    static float mag_z[SAMPLE_COUNT];
+    /* Buffer statici per evitare allocazioni sullo stack (256 float = 1 KB ciascuno) */
+    static float mag_m[WINDOW_SAMPLES]; /* magnitudine vettoriale */
+    static float mag_x[WINDOW_SAMPLES]; /* asse X grezzo (float) */
+    static float mag_y[WINDOW_SAMPLES];
+    static float mag_z[WINDOW_SAMPLES];
 
+    /* Prima passata: calcola magnitudine e RMS (usati per impact_score) */
     float m_rms_acc  = 0.0f;
     float m_jerk_max = 0.0f;
 
@@ -219,6 +291,14 @@ InferenceFeatures compute_features(
     float y_zcr = compute_zcr(mag_y, size);
     float z_zcr = compute_zcr(mag_z, size);
 
+    /*
+     * impact_score: punteggio composito [0,1] che misura quanto è "impulsivo" l'evento.
+     * Combina tre indicatori normalizzati rispetto all'RMS del segnale:
+     *   p99_norm   : ampiezza di picco relativa all'energia media     (peso 40%)
+     *   jerk_norm  : brusca variazione relativa all'energia media     (peso 35%)
+     *   band_norm  : energia nella banda 20-40 Hz (tipica dei knock)  (peso 25%)
+     * Normalizzare per RMS rende il punteggio invariante all'intensità assoluta.
+     */
     float p99_norm  = fminf(1.0f, m_p99      / (m_rms *  8.0f + 1e-9f));
     float jerk_norm = fminf(1.0f, m_jerk_max / (m_rms * 12.0f + 1e-9f));
     float band_norm = fminf(1.0f, m_b2040    / (m_rms * m_rms * (float)size * 0.3f + 1e-9f));
@@ -252,8 +332,6 @@ InferenceFeatures compute_features(
         feat.z_top7_freq[i] = safe_float(z_top7[i]);
     }
 
-    // Time-of-day features — passed in from main to keep this module
-    // independent of WiFi/RTC concerns
     feat.time_sin = safe_float(time_sin);
     feat.time_cos = safe_float(time_cos);
 
